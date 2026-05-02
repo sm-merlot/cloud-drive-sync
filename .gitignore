@@ -1,0 +1,8 @@
+# Build output
+main.js
+
+# Node
+node_modules/
+
+# Env
+.env

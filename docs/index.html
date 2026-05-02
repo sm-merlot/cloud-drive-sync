@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud Sync — Authorization</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            padding: 20px;
+        }
+        .card {
+            background: #313244;
+            border-radius: 12px;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 8px; color: #cba6f7; }
+        .subtitle { color: #a6adc8; margin-bottom: 24px; }
+        .code-box {
+            background: #1e1e2e;
+            border: 2px solid #cba6f7;
+            border-radius: 8px;
+            padding: 16px;
+            font-family: monospace;
+            font-size: 0.95rem;
+            word-break: break-all;
+            margin-bottom: 16px;
+            user-select: all;
+            cursor: pointer;
+            min-height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .btn {
+            background: #cba6f7;
+            color: #1e1e2e;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 24px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.85; }
+        .btn:active { opacity: 0.7; }
+        .copied { color: #a6e3a1; margin-top: 12px; font-size: 0.9rem; }
+        .error { color: #f38ba8; }
+        .instructions {
+            margin-top: 20px;
+            color: #a6adc8;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Cloud Sync Authorization</h1>
+        <p class="subtitle">Copy this code back into Obsidian</p>
+        <div class="code-box" id="codeDisplay">Loading...</div>
+        <button class="btn" id="copyBtn" style="display:none">Copy Code</button>
+        <p class="copied" id="copiedMsg" style="display:none">Copied to clipboard!</p>
+        <div class="instructions">
+            <p>1. Copy the code above</p>
+            <p>2. Go back to Obsidian</p>
+            <p>3. Paste it in the Cloud Sync settings under "Auth code"</p>
+        </div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+        const error = params.get('error');
+        const codeDisplay = document.getElementById('codeDisplay');
+        const copyBtn = document.getElementById('copyBtn');
+        const copiedMsg = document.getElementById('copiedMsg');
+
+        if (error) {
+            codeDisplay.textContent = 'Authorization failed: ' + error;
+            codeDisplay.classList.add('error');
+        } else if (code) {
+            codeDisplay.textContent = code;
+            copyBtn.style.display = 'inline-block';
+
+            // Auto-copy
+            navigator.clipboard.writeText(code).then(() => {
+                copiedMsg.style.display = 'block';
+                copiedMsg.textContent = 'Auto-copied to clipboard!';
+            }).catch(() => {});
+
+            copyBtn.addEventListener('click', () => {
+                navigator.clipboard.writeText(code).then(() => {
+                    copiedMsg.style.display = 'block';
+                    copiedMsg.textContent = 'Copied to clipboard!';
+                }).catch(() => {
+                    // Fallback: select text
+                    const range = document.createRange();
+                    range.selectNode(codeDisplay);
+                    window.getSelection().removeAllRanges();
+                    window.getSelection().addRange(range);
+                    copiedMsg.style.display = 'block';
+                    copiedMsg.textContent = 'Select and copy the code above';
+                });
+            });
+        } else {
+            codeDisplay.textContent = 'No authorization code found';
+            codeDisplay.classList.add('error');
+        }
+    </script>
+</body>
+</html>
