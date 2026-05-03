@@ -4,7 +4,7 @@ import type { GoogleDriveApi } from "./providers/google-drive/google-drive-api";
 import type { RemoteFileInfo } from "./types";
 
 const UPDATE_FOLDER_NAME = ".cloud-drive-sync";
-const PLUGIN_FILES = ["main.js", "manifest.json"];
+const PLUGIN_FILES = ["main.js", "manifest.json", "styles.css"];
 
 export class PluginUpdater {
 	private app: App;
