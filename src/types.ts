@@ -46,7 +46,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	},
 	syncIntervalMinutes: 15,
 	syncOnStartup: false,
-	excludePatterns: [".obsidian/**"],
+	excludePatterns: [],
 	mergeToolCommand: "",
 	syncState: {
 		files: {},

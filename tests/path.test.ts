@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getParentPath, getFileName, shouldExclude, guessMimeType } from "../src/util/path";
+import { getParentPath, getFileName, isDotPath, shouldExclude, guessMimeType } from "../src/util/path";
 
 describe("getParentPath", () => {
 	it("top-level file", () => {
@@ -12,6 +12,28 @@ describe("getParentPath", () => {
 
 	it("one level deep", () => {
 		expect(getParentPath("folder/file.md")).toBe("folder");
+	});
+});
+
+describe("isDotPath", () => {
+	it("dotfile at root", () => {
+		expect(isDotPath(".hidden")).toBe(true);
+	});
+
+	it("dotfolder", () => {
+		expect(isDotPath(".obsidian/plugins/foo")).toBe(true);
+	});
+
+	it("dotfolder nested", () => {
+		expect(isDotPath("folder/.secret/file.md")).toBe(true);
+	});
+
+	it("normal file", () => {
+		expect(isDotPath("notes/daily.md")).toBe(false);
+	});
+
+	it("blocks all dotfolders", () => {
+		expect(isDotPath(".cloud-drive-sync/main.js")).toBe(true);
 	});
 });
 

@@ -5,7 +5,7 @@ import type { PluginSettings, RemoteFileInfo, SyncAction } from "../types";
 import { FirstSyncModal, type FirstSyncStrategy } from "./first-sync-modal";
 import { SyncResultsModal, type SyncIssue, type SyncIssueResolution } from "./sync-results-modal";
 import { computeMD5 } from "../util/hash";
-import { getFileName, getParentPath, guessMimeType, shouldExclude } from "../util/path";
+import { getFileName, getParentPath, guessMimeType, isDotPath, shouldExclude } from "../util/path";
 
 export interface SyncResult {
 	uploaded: number;
@@ -169,7 +169,7 @@ export class SyncEngine {
 
 			const localMap = new Map<string, TFile>();
 			for (const path of paths) {
-				if (shouldExclude(path, this.settings.excludePatterns)) continue;
+				if (this.shouldSkip(path)) continue;
 				const file = this.app.vault.getAbstractFileByPath(path);
 				if (file instanceof TFile) {
 					localMap.set(path, file);
@@ -178,7 +178,7 @@ export class SyncEngine {
 
 			const actions: SyncAction[] = [];
 			for (const path of paths) {
-				if (shouldExclude(path, this.settings.excludePatterns)) continue;
+				if (this.shouldSkip(path)) continue;
 
 				const local = localMap.get(path);
 				const remote = remoteMap.get(path);
@@ -442,10 +442,14 @@ export class SyncEngine {
 		}
 	}
 
+	private shouldSkip(path: string): boolean {
+		return isDotPath(path) || shouldExclude(path, this.settings.excludePatterns);
+	}
+
 	private getLocalFiles(): TFile[] {
 		return this.app.vault
 			.getFiles()
-			.filter((f) => !shouldExclude(f.path, this.settings.excludePatterns));
+			.filter((f) => !this.shouldSkip(f.path));
 	}
 
 	private computeActions(
@@ -460,7 +464,7 @@ export class SyncEngine {
 		for (const path of this.stateStore.getAllTrackedPaths()) allPaths.add(path);
 
 		for (const path of allPaths) {
-			if (shouldExclude(path, this.settings.excludePatterns)) continue;
+			if (this.shouldSkip(path)) continue;
 
 			const local = localMap.get(path);
 			const remote = remoteMap.get(path);

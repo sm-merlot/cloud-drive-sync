@@ -7,7 +7,8 @@ import { GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
 import { GoogleDriveProvider } from "./providers/google-drive/google-drive-provider";
 import { SyncEngine } from "./sync/sync-engine";
 import { SyncStateStore } from "./sync/sync-state";
-import { shouldExclude } from "./util/path";
+import { PluginUpdater } from "./updater";
+import { isDotPath, shouldExclude } from "./util/path";
 
 const DEBOUNCE_MS = 5000;
 
@@ -35,6 +36,12 @@ export default class CloudSyncPlugin extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: "check-plugin-update",
+			name: "Check for plugin update",
+			callback: () => this.checkForPluginUpdate(),
+		});
+
 		this.statusBarEl = this.addStatusBarItem();
 		this.updateStatusBar("idle");
 
@@ -42,8 +49,9 @@ export default class CloudSyncPlugin extends Plugin {
 		this.setupFileWatcher();
 
 		if (this.settings.syncOnStartup) {
-			this.app.workspace.onLayoutReady(() => {
-				this.runSync();
+			this.app.workspace.onLayoutReady(async () => {
+				await this.runSync();
+				await this.checkForPluginUpdate();
 			});
 		}
 	}
@@ -84,7 +92,7 @@ export default class CloudSyncPlugin extends Plugin {
 	}
 
 	private queuePath(path: string): void {
-		if (shouldExclude(path, this.settings.excludePatterns)) return;
+		if (isDotPath(path) || shouldExclude(path, this.settings.excludePatterns)) return;
 		// Don't queue if not configured
 		const gd = this.settings.googleDrive;
 		if (!gd.refreshToken || !gd.rootFolderId) return;
@@ -236,6 +244,23 @@ export default class CloudSyncPlugin extends Plugin {
 			this.settings.googleDrive.rootFolderName = chosen.name;
 			await this.saveSettings();
 			new Notice(`Sync folder set to: ${chosen.name}`);
+		}
+	}
+
+	private async checkForPluginUpdate(): Promise<void> {
+		const gd = this.settings.googleDrive;
+		if (!gd.refreshToken || !gd.clientId || !gd.clientSecret || !gd.rootFolderId) return;
+
+		const auth = new GoogleDriveAuth(gd, (updates) => {
+			Object.assign(this.settings.googleDrive, updates);
+			this.saveSettings();
+		});
+		const api = new GoogleDriveApi(() => auth.ensureValidToken());
+		const updater = new PluginUpdater(this.app, this.manifest.id, api, gd.rootFolderId);
+
+		const hasUpdate = await updater.checkForUpdate();
+		if (hasUpdate) {
+			await updater.checkAndPrompt();
 		}
 	}
 

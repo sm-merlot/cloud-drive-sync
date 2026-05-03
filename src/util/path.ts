@@ -39,6 +39,14 @@ function matchGlob(path: string, pattern: string): boolean {
 	return false;
 }
 
+export function isDotPath(path: string): boolean {
+	const segments = path.split("/");
+	for (const seg of segments) {
+		if (seg.startsWith(".")) return true;
+	}
+	return false;
+}
+
 export function guessMimeType(path: string): string {
 	const ext = path.split(".").pop()?.toLowerCase() || "";
 	const map: Record<string, string> = {
