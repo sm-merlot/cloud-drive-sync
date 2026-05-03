@@ -6,16 +6,17 @@ export function computeMD5(data: ArrayBuffer): string {
 	const len = bytes.length;
 
 	// Pre-processing: adding padding bits
+	// Total must be multiple of 64, with last 8 bytes reserved for length
 	const bitLen = len * 8;
-	const padLen = ((len + 8) % 64 === 0) ? len + 8 : len + 8 + (64 - ((len + 8) % 64));
-	const padded = new Uint8Array(padLen + 8);
+	const totalLen = Math.ceil((len + 9) / 64) * 64;
+	const padded = new Uint8Array(totalLen);
 	padded.set(bytes);
 	padded[len] = 0x80;
 
 	// Append original length in bits as 64-bit little-endian
 	const view = new DataView(padded.buffer);
-	view.setUint32(padLen, bitLen >>> 0, true);
-	view.setUint32(padLen + 4, Math.floor(bitLen / 0x100000000), true);
+	view.setUint32(totalLen - 8, bitLen >>> 0, true);
+	view.setUint32(totalLen - 4, Math.floor(bitLen / 0x100000000), true);
 
 	// MD5 initialization
 	let a0 = 0x67452301;
@@ -46,7 +47,7 @@ export function computeMD5(data: ArrayBuffer): string {
 		0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
 	];
 
-	const totalChunks = padded.length / 64;
+	const totalChunks = totalLen / 64;
 	for (let chunk = 0; chunk < totalChunks; chunk++) {
 		const offset = chunk * 64;
 		const M = new Uint32Array(16);
