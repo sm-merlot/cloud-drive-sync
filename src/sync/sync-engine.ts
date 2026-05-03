@@ -84,7 +84,7 @@ export class SyncEngine {
 
 			// 3. Compute actions
 			const actions = this.computeActions(localMap, remoteMap);
-			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
+			const folderActions = await this.computeFolderActions(localFolderPaths, remoteFolderMap);
 
 			// 4. Phase 1: folder creates (depth ascending — parents first)
 			const issues: SyncIssue[] = [];
@@ -232,7 +232,7 @@ export class SyncEngine {
 			}
 
 			// Compute folder actions for folder paths
-			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
+			const folderActions = await this.computeFolderActions(localFolderPaths, remoteFolderMap);
 			const relevantFolderActions = folderActions.filter(a => folderPaths.has(a.vaultPath));
 
 			// Phase 1: folder creates
@@ -533,6 +533,13 @@ export class SyncEngine {
 		}
 	}
 
+	private async folderExistedBeforeLastSync(folderPath: string): Promise<boolean> {
+		const lastSync = this.stateStore.lastSyncTime;
+		if (lastSync === 0) return false;
+		const stat = await this.app.vault.adapter.stat(folderPath);
+		return stat != null && stat.ctime < lastSync;
+	}
+
 	private folderContainsTrackedFiles(folderPath: string): boolean {
 		const prefix = folderPath + "/";
 		for (const tracked of this.stateStore.getAllTrackedPaths()) {
@@ -623,10 +630,10 @@ export class SyncEngine {
 		return actions;
 	}
 
-	private computeFolderActions(
+	private async computeFolderActions(
 		localFolderPaths: Set<string>,
 		remoteFolderMap: Map<string, RemoteFileInfo>
-	): SyncAction[] {
+	): Promise<SyncAction[]> {
 		const actions: SyncAction[] = [];
 		const allPaths = new Set<string>();
 
@@ -664,6 +671,10 @@ export class SyncEngine {
 				if (this.folderContainsTrackedFiles(path)) {
 					// Folder has tracked files but no folder record → pre-folder-tracking era
 					// Remote folder gone → delete locally
+					actions.push({ type: "delete-folder-local", vaultPath: path });
+				} else if (await this.folderExistedBeforeLastSync(path)) {
+					// Empty folder that existed before last sync but has no record
+					// Not on remote → was deleted remotely
 					actions.push({ type: "delete-folder-local", vaultPath: path });
 				} else {
 					// Genuinely new local folder → create remote
