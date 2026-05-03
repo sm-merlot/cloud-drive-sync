@@ -62,7 +62,7 @@ npm install
 npm run build
 ```
 
-This produces `main.js` in the project root. `styles.css` is already in the repo root.
+This produces `main.js` in the project root and copies all plugin files (`main.js`, `manifest.json`, `styles.css`) to a `dist/` folder for easy deployment.
 
 ### 5. Install the Plugin
 
@@ -74,8 +74,8 @@ The plugin must be manually installed into each vault's `.obsidian/plugins/cloud
 # Create the plugin folder
 mkdir -p /path/to/your/vault/.obsidian/plugins/cloud-drive-sync
 
-# Copy the plugin files
-cp main.js manifest.json styles.css /path/to/your/vault/.obsidian/plugins/cloud-drive-sync/
+# Copy the plugin files from dist/
+cp dist/* /path/to/your/vault/.obsidian/plugins/cloud-drive-sync/
 ```
 
 For development, symlink instead of copying:
@@ -126,7 +126,7 @@ To update the plugin on all devices without manual file copying:
 
 1. Build the plugin on your desktop: `npm run build`
 2. In Google Drive, create a folder called `.cloud-drive-sync` inside your sync root folder
-3. Upload `main.js`, `manifest.json`, and `styles.css` to that folder
+3. Upload the contents of `dist/` to that folder
 4. On each device, the plugin checks this folder after every manual sync and on startup, auto-updating and reloading if files have changed
 
 The `.cloud-drive-sync` folder is excluded from vault sync (dotfolder), so it only contains plugin build artifacts and won't appear in your vault.
