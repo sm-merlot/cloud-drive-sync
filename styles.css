@@ -1,6 +1,10 @@
 /* Hide Obsidian's built-in sync status icon */
-.status-bar-item.mod-clickable.sync-status-icon {
-	display: none;
+.status-bar-item.plugin-sync {
+	display: none !important;
+}
+
+.cloud-sync-icon {
+	margin-right: 4px;
 }
 
 .cloud-sync-syncing .cloud-sync-icon svg {

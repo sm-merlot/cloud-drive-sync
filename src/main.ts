@@ -279,20 +279,20 @@ export default class CloudSyncPlugin extends Plugin {
 				setIcon(iconSpan, "cloud");
 				const last = this.settings.syncState.lastSyncTime;
 				textSpan.setText(
-					last ? ` Synced ${new Date(last).toLocaleTimeString()}` : " Cloud Sync"
+					last ? `Synced ${new Date(last).toLocaleTimeString()}` : "Cloud Sync"
 				);
 				this.statusBarEl.classList.remove("cloud-sync-syncing", "cloud-sync-error");
 				break;
 			}
 			case "syncing":
 				setIcon(iconSpan, "refresh-cw");
-				textSpan.setText(" Syncing...");
+				textSpan.setText("Syncing...");
 				this.statusBarEl.classList.add("cloud-sync-syncing");
 				this.statusBarEl.classList.remove("cloud-sync-error");
 				break;
 			case "error":
 				setIcon(iconSpan, "cloud-off");
-				textSpan.setText(" Sync error");
+				textSpan.setText("Sync error");
 				this.statusBarEl.classList.remove("cloud-sync-syncing");
 				this.statusBarEl.classList.add("cloud-sync-error");
 				break;
