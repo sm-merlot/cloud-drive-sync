@@ -29,6 +29,7 @@ export interface PluginSettings {
 	syncIntervalMinutes: number;
 	syncOnStartup: boolean;
 	excludePatterns: string[];
+	mergeToolCommand: string;
 	syncState: SyncState;
 }
 
@@ -46,13 +47,14 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	syncIntervalMinutes: 15,
 	syncOnStartup: false,
 	excludePatterns: [".obsidian/**"],
+	mergeToolCommand: "",
 	syncState: {
 		files: {},
 		lastSyncTime: 0,
 	},
 };
 
-export type ConflictResolution = "local" | "remote" | "skip";
+export type ConflictResolution = "local" | "remote" | "merge" | "skip";
 
 export type SyncAction =
 	| { type: "upload"; vaultPath: string }

@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import type CloudSyncPlugin from "./main";
 import { GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
 
@@ -83,6 +83,23 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		if (Platform.isDesktop) {
+			new Setting(containerEl)
+				.setName("Merge tool command")
+				.setDesc(
+					'External merge tool for conflicts. Use {local} and {remote} as placeholders. E.g.: bcomp {local} {remote}'
+				)
+				.addText((text) =>
+					text
+						.setPlaceholder('bcomp {local} {remote}')
+						.setValue(this.plugin.settings.mergeToolCommand)
+						.onChange(async (value) => {
+							this.plugin.settings.mergeToolCommand = value;
+							await this.plugin.saveSettings();
+						})
+				);
+		}
 
 		// --- Status ---
 		containerEl.createEl("h3", { text: "Status" });

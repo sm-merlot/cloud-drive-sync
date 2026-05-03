@@ -1,9 +1,9 @@
-import { App, Notice, TFile } from "obsidian";
+import { App, Notice, Platform, TFile } from "obsidian";
 import type { CloudProvider } from "../providers/cloud-provider";
 import type { SyncStateStore } from "./sync-state";
 import type { PluginSettings, RemoteFileInfo, SyncAction } from "../types";
-import { ConflictModal } from "./conflict-modal";
 import { FirstSyncModal, type FirstSyncStrategy } from "./first-sync-modal";
+import { SyncResultsModal, type SyncIssue, type SyncIssueResolution } from "./sync-results-modal";
 import { computeMD5 } from "../util/hash";
 import { getFileName, getParentPath, guessMimeType, shouldExclude } from "../util/path";
 
@@ -77,31 +77,66 @@ export class SyncEngine {
 			// 3. Compute actions
 			const actions = this.computeActions(localMap, remoteMap);
 
-			// 4. Execute non-conflict actions first
+			// 4. Execute non-conflict actions, collect issues
+			const issues: SyncIssue[] = [];
+
 			for (const action of actions) {
 				if (action.type === "conflict") continue;
 				try {
 					await this.executeAction(action, localMap, remoteMap);
 					this.countAction(action, result);
 				} catch (e) {
+					const msg = e instanceof Error ? e.message : String(e);
 					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
+					issues.push({
+						vaultPath: action.vaultPath,
+						type: "error",
+						remoteId: "remoteId" in action ? action.remoteId : undefined,
+						errorMessage: msg,
+					});
 					result.errors++;
 				}
 			}
 
-			// 5. Handle conflicts
+			// 5. Collect conflicts (check hashes first to filter false conflicts)
 			for (const action of actions) {
 				if (action.type !== "conflict") continue;
-				try {
-					const resolved = await this.handleConflict(action, localMap, remoteMap);
-					if (resolved) result.conflicts++;
-				} catch (e) {
-					console.error(`Conflict error on ${action.vaultPath}:`, e);
-					result.errors++;
+
+				const file = localMap.get(action.vaultPath);
+				const remote = remoteMap.get(action.vaultPath);
+				if (!file || !remote) continue;
+
+				const localContent = await this.app.vault.readBinary(file);
+				const localHash = computeMD5(localContent);
+
+				if (localHash === remote.md5Checksum) {
+					// Content identical — auto-resolve
+					this.stateStore.setRecord(action.vaultPath, {
+						vaultPath: action.vaultPath,
+						remoteId: remote.id,
+						remoteFolderId: remote.parentId,
+						localModTime: file.stat.mtime,
+						remoteModTime: remote.modifiedTime,
+						contentHash: localHash,
+					});
+				} else {
+					issues.push({
+						vaultPath: action.vaultPath,
+						type: "conflict",
+						remoteId: remote.id,
+						localModTime: file.stat.mtime,
+						remoteModTime: remote.modifiedTime,
+					});
 				}
 			}
 
-			// 6. Finalize
+			// 6. Show results modal if there are issues
+			if (issues.length > 0) {
+				const resolutions = await this.showResultsModal(issues);
+				await this.applyResolutions(resolutions, localMap, remoteMap, result);
+			}
+
+			// 7. Finalize
 			this.stateStore.lastSyncTime = Date.now();
 			await this.stateStore.save();
 		} finally {
@@ -109,6 +144,302 @@ export class SyncEngine {
 		}
 
 		return result;
+	}
+
+	async syncPaths(paths: Set<string>): Promise<SyncResult> {
+		if (this.syncing) {
+			return { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0 };
+		}
+
+		this.syncing = true;
+		const result: SyncResult = {
+			uploaded: 0,
+			downloaded: 0,
+			deleted: 0,
+			conflicts: 0,
+			errors: 0,
+		};
+
+		try {
+			const remoteFiles = await this.provider.listAllFiles();
+			const remoteMap = new Map<string, RemoteFileInfo>();
+			for (const f of remoteFiles) {
+				remoteMap.set(f.path, f);
+			}
+
+			const localMap = new Map<string, TFile>();
+			for (const path of paths) {
+				if (shouldExclude(path, this.settings.excludePatterns)) continue;
+				const file = this.app.vault.getAbstractFileByPath(path);
+				if (file instanceof TFile) {
+					localMap.set(path, file);
+				}
+			}
+
+			const actions: SyncAction[] = [];
+			for (const path of paths) {
+				if (shouldExclude(path, this.settings.excludePatterns)) continue;
+
+				const local = localMap.get(path);
+				const remote = remoteMap.get(path);
+				const record = this.stateStore.getRecord(path);
+
+				if (local && remote && record) {
+					const localChanged = local.stat.mtime > record.localModTime;
+					const remoteChanged = remote.modifiedTime > record.remoteModTime;
+					if (localChanged && remoteChanged) {
+						actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+					} else if (localChanged) {
+						actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
+					} else if (remoteChanged) {
+						actions.push({ type: "update-local", vaultPath: path, remoteId: remote.id });
+					}
+				} else if (local && remote && !record) {
+					actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+				} else if (local && !remote && record) {
+					actions.push({ type: "delete-local", vaultPath: path });
+				} else if (local && !remote && !record) {
+					actions.push({ type: "upload", vaultPath: path });
+				} else if (!local && remote && record) {
+					actions.push({ type: "delete-remote", remoteId: remote.id, vaultPath: path });
+				} else if (!local && remote && !record) {
+					actions.push({ type: "download", vaultPath: path, remoteId: remote.id });
+				} else if (!local && !remote && record) {
+					this.stateStore.removeRecord(path);
+				}
+			}
+
+			const issues: SyncIssue[] = [];
+
+			for (const action of actions) {
+				if (action.type === "conflict") continue;
+				try {
+					await this.executeAction(action, localMap, remoteMap);
+					this.countAction(action, result);
+				} catch (e) {
+					const msg = e instanceof Error ? e.message : String(e);
+					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
+					issues.push({
+						vaultPath: action.vaultPath,
+						type: "error",
+						remoteId: "remoteId" in action ? action.remoteId : undefined,
+						errorMessage: msg,
+					});
+					result.errors++;
+				}
+			}
+
+			for (const action of actions) {
+				if (action.type !== "conflict") continue;
+				const file = localMap.get(action.vaultPath);
+				const remote = remoteMap.get(action.vaultPath);
+				if (!file || !remote) continue;
+
+				const localContent = await this.app.vault.readBinary(file);
+				const localHash = computeMD5(localContent);
+
+				if (localHash === remote.md5Checksum) {
+					this.stateStore.setRecord(action.vaultPath, {
+						vaultPath: action.vaultPath,
+						remoteId: remote.id,
+						remoteFolderId: remote.parentId,
+						localModTime: file.stat.mtime,
+						remoteModTime: remote.modifiedTime,
+						contentHash: localHash,
+					});
+				} else {
+					issues.push({
+						vaultPath: action.vaultPath,
+						type: "conflict",
+						remoteId: remote.id,
+						localModTime: file.stat.mtime,
+						remoteModTime: remote.modifiedTime,
+					});
+				}
+			}
+
+			if (issues.length > 0) {
+				const resolutions = await this.showResultsModal(issues);
+				await this.applyResolutions(resolutions, localMap, remoteMap, result);
+			}
+
+			this.stateStore.lastSyncTime = Date.now();
+			await this.stateStore.save();
+		} finally {
+			this.syncing = false;
+		}
+
+		return result;
+	}
+
+	private async showResultsModal(issues: SyncIssue[]): Promise<SyncIssueResolution[]> {
+		const modal = new SyncResultsModal(this.app, issues);
+		return modal.openAndWait();
+	}
+
+	private async applyResolutions(
+		resolutions: SyncIssueResolution[],
+		localMap: Map<string, TFile>,
+		remoteMap: Map<string, RemoteFileInfo>,
+		result: SyncResult
+	): Promise<void> {
+		for (const res of resolutions) {
+			try {
+				switch (res.resolution) {
+					case "local":
+						if (res.remoteId) {
+							await this.executeAction(
+								{ type: "update-remote", vaultPath: res.vaultPath, remoteId: res.remoteId },
+								localMap,
+								remoteMap
+							);
+							result.conflicts++;
+						}
+						break;
+
+					case "remote":
+						if (res.remoteId) {
+							await this.executeAction(
+								{ type: "update-local", vaultPath: res.vaultPath, remoteId: res.remoteId },
+								localMap,
+								remoteMap
+							);
+							result.conflicts++;
+						}
+						break;
+
+					case "merge":
+						if (res.remoteId && Platform.isDesktop) {
+							await this.mergeWithExternalTool(res.vaultPath, res.remoteId, localMap, remoteMap);
+							result.conflicts++;
+						}
+						break;
+
+					case "retry":
+						// Re-attempt: figure out what action to take
+						await this.retryFile(res.vaultPath, localMap, remoteMap, result);
+						break;
+
+					case "skip":
+						break;
+				}
+			} catch (e) {
+				console.error(`Resolution error on ${res.vaultPath}:`, e);
+				result.errors++;
+			}
+		}
+	}
+
+	private async mergeWithExternalTool(
+		vaultPath: string,
+		remoteId: string,
+		localMap: Map<string, TFile>,
+		remoteMap: Map<string, RemoteFileInfo>
+	): Promise<void> {
+		const file = localMap.get(vaultPath);
+		if (!file) return;
+
+		const remoteContent = await this.provider.downloadFile(remoteId);
+		const remote = remoteMap.get(vaultPath)!;
+
+		// Write remote version to a temp file next to the local file
+		const tempPath = vaultPath.replace(/(\.[^.]+)$/, `.remote$1`);
+		const existing = this.app.vault.getAbstractFileByPath(tempPath);
+		if (existing instanceof TFile) {
+			await this.app.vault.modifyBinary(existing, remoteContent);
+		} else {
+			const parentPath = getParentPath(tempPath);
+			if (parentPath) {
+				await this.ensureLocalFolder(parentPath);
+			}
+			await this.app.vault.createBinary(tempPath, remoteContent);
+		}
+
+		// Get absolute paths for external tool
+		const adapter = this.app.vault.adapter;
+		const localAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(vaultPath);
+		const remoteAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(tempPath);
+
+		if (localAbsPath && remoteAbsPath && this.settings.mergeToolCommand) {
+			const cmd = this.settings.mergeToolCommand
+				.replace("{local}", `"${localAbsPath}"`)
+				.replace("{remote}", `"${remoteAbsPath}"`);
+
+			const { exec } = require("child_process") as typeof import("child_process");
+			await new Promise<void>((resolve, reject) => {
+				exec(cmd, (error: Error | null) => {
+					if (error) reject(error);
+					else resolve();
+				});
+			});
+		} else {
+			new Notice(
+				`Remote version saved as ${tempPath}. Merge manually, then delete the .remote file.`
+			);
+		}
+
+		// After merge, upload the local version (user edited it) and update tracking
+		const mergedContent = await this.app.vault.readBinary(file);
+		const mimeType = guessMimeType(vaultPath);
+		await this.provider.updateFile(remoteId, mergedContent, mimeType);
+		const hash = computeMD5(mergedContent);
+
+		this.stateStore.setRecord(vaultPath, {
+			vaultPath,
+			remoteId,
+			remoteFolderId: remote.parentId,
+			localModTime: file.stat.mtime,
+			remoteModTime: Date.now(),
+			contentHash: hash,
+		});
+
+		// Clean up temp file
+		const tempFile = this.app.vault.getAbstractFileByPath(tempPath);
+		if (tempFile instanceof TFile) {
+			await this.app.vault.delete(tempFile);
+		}
+	}
+
+	private async retryFile(
+		vaultPath: string,
+		localMap: Map<string, TFile>,
+		remoteMap: Map<string, RemoteFileInfo>,
+		result: SyncResult
+	): Promise<void> {
+		const local = this.app.vault.getAbstractFileByPath(vaultPath);
+		const remote = remoteMap.get(vaultPath);
+		const record = this.stateStore.getRecord(vaultPath);
+
+		// Re-populate localMap if file exists now
+		if (local instanceof TFile) {
+			localMap.set(vaultPath, local);
+		}
+
+		if (local instanceof TFile && remote && record) {
+			await this.executeAction(
+				{ type: "update-remote", vaultPath, remoteId: remote.id },
+				localMap,
+				remoteMap
+			);
+			result.uploaded++;
+		} else if (local instanceof TFile && !remote) {
+			await this.executeAction({ type: "upload", vaultPath }, localMap, remoteMap);
+			result.uploaded++;
+		} else if (!local && remote && record) {
+			await this.executeAction(
+				{ type: "delete-remote", vaultPath, remoteId: remote.id },
+				localMap,
+				remoteMap
+			);
+			result.deleted++;
+		} else if (local instanceof TFile && remote) {
+			await this.executeAction(
+				{ type: "update-remote", vaultPath, remoteId: remote.id },
+				localMap,
+				remoteMap
+			);
+			result.uploaded++;
+		}
 	}
 
 	private getLocalFiles(): TFile[] {
@@ -136,7 +467,6 @@ export class SyncEngine {
 			const record = this.stateStore.getRecord(path);
 
 			if (local && remote && record) {
-				// Both exist and tracked — check for changes
 				const localChanged = local.stat.mtime > record.localModTime;
 				const remoteChanged = remote.modifiedTime > record.remoteModTime;
 
@@ -147,32 +477,23 @@ export class SyncEngine {
 				} else if (remoteChanged) {
 					actions.push({ type: "update-local", vaultPath: path, remoteId: remote.id });
 				}
-				// Neither changed → skip
 			} else if (local && remote && !record) {
-				// Both exist but not tracked (first sync)
 				if (this.firstSyncStrategy === "download") {
 					actions.push({ type: "update-local", vaultPath: path, remoteId: remote.id });
 				} else if (this.firstSyncStrategy === "upload") {
 					actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
 				} else {
-					// merge or normal — treat as conflict
 					actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
 				}
 			} else if (local && !remote && record) {
-				// Was tracked, remote deleted → delete local
 				actions.push({ type: "delete-local", vaultPath: path });
 			} else if (local && !remote && !record) {
-				// New local file → upload
 				actions.push({ type: "upload", vaultPath: path });
 			} else if (!local && remote && record) {
-				// Was tracked, local deleted → delete remote
 				actions.push({ type: "delete-remote", remoteId: remote.id, vaultPath: path });
 			} else if (!local && remote && !record) {
-				// New remote file → download
 				actions.push({ type: "download", vaultPath: path, remoteId: remote.id });
-			}
-			// !local && !remote → stale record, clean up
-			else if (!local && !remote && record) {
+			} else if (!local && !remote && record) {
 				this.stateStore.removeRecord(path);
 			}
 		}
@@ -215,7 +536,6 @@ export class SyncEngine {
 				if (existing instanceof TFile) {
 					await this.app.vault.modifyBinary(existing, content);
 				} else {
-					// Ensure parent folder exists locally
 					const parentPath = getParentPath(action.vaultPath);
 					if (parentPath) {
 						await this.ensureLocalFolder(parentPath);
@@ -287,169 +607,6 @@ export class SyncEngine {
 				break;
 			}
 		}
-	}
-
-	private async handleConflict(
-		action: SyncAction & { type: "conflict" },
-		localMap: Map<string, TFile>,
-		remoteMap: Map<string, RemoteFileInfo>
-	): Promise<boolean> {
-		const file = localMap.get(action.vaultPath);
-		const remote = remoteMap.get(action.vaultPath);
-		if (!file || !remote) return false;
-
-		// Check if content is actually the same
-		const localContent = await this.app.vault.readBinary(file);
-		const localHash = computeMD5(localContent);
-
-		if (localHash === remote.md5Checksum) {
-			// Content identical — just update tracking, no conflict
-			this.stateStore.setRecord(action.vaultPath, {
-				vaultPath: action.vaultPath,
-				remoteId: remote.id,
-				remoteFolderId: remote.parentId,
-				localModTime: file.stat.mtime,
-				remoteModTime: remote.modifiedTime,
-				contentHash: localHash,
-			});
-			return false;
-		}
-
-		// Actual conflict — prompt user
-		const modal = new ConflictModal(
-			this.app,
-			action.vaultPath,
-			file.stat.mtime,
-			remote.modifiedTime
-		);
-		const resolution = await modal.openAndWait();
-
-		switch (resolution) {
-			case "local":
-				await this.executeAction(
-					{ type: "update-remote", vaultPath: action.vaultPath, remoteId: action.remoteId },
-					localMap,
-					remoteMap
-				);
-				return true;
-
-			case "remote":
-				await this.executeAction(
-					{ type: "update-local", vaultPath: action.vaultPath, remoteId: action.remoteId },
-					localMap,
-					remoteMap
-				);
-				return true;
-
-			case "skip":
-				return false;
-		}
-	}
-
-	async syncPaths(paths: Set<string>): Promise<SyncResult> {
-		if (this.syncing) {
-			return { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0 };
-		}
-
-		this.syncing = true;
-		const result: SyncResult = {
-			uploaded: 0,
-			downloaded: 0,
-			deleted: 0,
-			conflicts: 0,
-			errors: 0,
-		};
-
-		try {
-			// Gather remote files for just these paths
-			// We need the full remote listing to find matching files
-			const remoteFiles = await this.provider.listAllFiles();
-			const remoteMap = new Map<string, RemoteFileInfo>();
-			for (const f of remoteFiles) {
-				remoteMap.set(f.path, f);
-			}
-
-			const localMap = new Map<string, TFile>();
-			for (const path of paths) {
-				if (shouldExclude(path, this.settings.excludePatterns)) continue;
-				const file = this.app.vault.getAbstractFileByPath(path);
-				if (file instanceof TFile) {
-					localMap.set(path, file);
-				} else {
-					// File was deleted — still include path so computeActions handles it
-					localMap.delete(path);
-				}
-			}
-
-			// Build scoped action list — only for requested paths
-			const actions: SyncAction[] = [];
-			for (const path of paths) {
-				if (shouldExclude(path, this.settings.excludePatterns)) continue;
-
-				const local = localMap.get(path);
-				const remote = remoteMap.get(path);
-				const record = this.stateStore.getRecord(path);
-
-				if (local && remote && record) {
-					const localChanged = local.stat.mtime > record.localModTime;
-					const remoteChanged = remote.modifiedTime > record.remoteModTime;
-
-					if (localChanged && remoteChanged) {
-						actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
-					} else if (localChanged) {
-						actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
-					} else if (remoteChanged) {
-						actions.push({ type: "update-local", vaultPath: path, remoteId: remote.id });
-					}
-				} else if (local && remote && !record) {
-					actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
-				} else if (local && !remote && record) {
-					actions.push({ type: "delete-local", vaultPath: path });
-				} else if (local && !remote && !record) {
-					actions.push({ type: "upload", vaultPath: path });
-				} else if (!local && remote && record) {
-					actions.push({ type: "delete-remote", remoteId: remote.id, vaultPath: path });
-				} else if (!local && remote && !record) {
-					actions.push({ type: "download", vaultPath: path, remoteId: remote.id });
-				} else if (!local && !remote && record) {
-					this.stateStore.removeRecord(path);
-				}
-			}
-
-			// Execute
-			for (const action of actions) {
-				if (action.type === "conflict") continue;
-				try {
-					await this.executeAction(action, localMap, remoteMap);
-					this.countAction(action, result);
-				} catch (e) {
-					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
-					result.errors++;
-				}
-			}
-
-			for (const action of actions) {
-				if (action.type !== "conflict") continue;
-				try {
-					const resolved = await this.handleConflict(
-						action as SyncAction & { type: "conflict" },
-						localMap,
-						remoteMap
-					);
-					if (resolved) result.conflicts++;
-				} catch (e) {
-					console.error(`Conflict error on ${action.vaultPath}:`, e);
-					result.errors++;
-				}
-			}
-
-			this.stateStore.lastSyncTime = Date.now();
-			await this.stateStore.save();
-		} finally {
-			this.syncing = false;
-		}
-
-		return result;
 	}
 
 	private async ensureLocalFolder(path: string): Promise<void> {
