@@ -1,0 +1,23 @@
+src/updater.ts
+  4cc7525c9e879196 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "5b71f1bdede4c2ff9e6c6ed4e322d6b5a959c71b",
+  "prompts": {
+    "4cc7525c9e879196": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9f2a415-5a35-414d-a3a0-68cfe5ae4351",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "scme0",
+      "messages": [],
+      "total_additions": 36,
+      "total_deletions": 7,
+      "accepted_lines": 36,
+      "overriden_lines": 0
+    }
+  }
+}
