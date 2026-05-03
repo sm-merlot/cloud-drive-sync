@@ -1,0 +1,12 @@
+.cloud-sync-syncing .cloud-sync-icon svg {
+	animation: cloud-sync-spin 1s linear infinite;
+}
+
+.cloud-sync-error .cloud-sync-icon svg {
+	color: var(--text-error);
+}
+
+@keyframes cloud-sync-spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}

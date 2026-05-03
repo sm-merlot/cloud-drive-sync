@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, TFolder, TAbstractFile } from "obsidian";
+import { Notice, Plugin, TFile, TFolder, TAbstractFile, setIcon } from "obsidian";
 import { CloudSyncSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, type PluginSettings } from "./types";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
@@ -266,19 +266,32 @@ export default class CloudSyncPlugin extends Plugin {
 
 	private updateStatusBar(state: "idle" | "syncing" | "error"): void {
 		if (!this.statusBarEl) return;
+		this.statusBarEl.empty();
+
+		const iconSpan = this.statusBarEl.createSpan({ cls: "cloud-sync-icon" });
+		const textSpan = this.statusBarEl.createSpan();
+
 		switch (state) {
 			case "idle": {
+				setIcon(iconSpan, "cloud");
 				const last = this.settings.syncState.lastSyncTime;
-				this.statusBarEl.setText(
-					last ? `Synced ${new Date(last).toLocaleTimeString()}` : "Cloud Sync"
+				textSpan.setText(
+					last ? ` Synced ${new Date(last).toLocaleTimeString()}` : " Cloud Sync"
 				);
+				this.statusBarEl.classList.remove("cloud-sync-syncing", "cloud-sync-error");
 				break;
 			}
 			case "syncing":
-				this.statusBarEl.setText("Syncing...");
+				setIcon(iconSpan, "refresh-cw");
+				textSpan.setText(" Syncing...");
+				this.statusBarEl.classList.add("cloud-sync-syncing");
+				this.statusBarEl.classList.remove("cloud-sync-error");
 				break;
 			case "error":
-				this.statusBarEl.setText("Sync error");
+				setIcon(iconSpan, "cloud-off");
+				textSpan.setText(" Sync error");
+				this.statusBarEl.classList.remove("cloud-sync-syncing");
+				this.statusBarEl.classList.add("cloud-sync-error");
 				break;
 		}
 	}
