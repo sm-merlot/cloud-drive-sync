@@ -533,6 +533,17 @@ export class SyncEngine {
 		}
 	}
 
+	private folderContainsTrackedFiles(folderPath: string): boolean {
+		const prefix = folderPath + "/";
+		for (const tracked of this.stateStore.getAllTrackedPaths()) {
+			if (tracked.startsWith(prefix)) {
+				const rec = this.stateStore.getRecord(tracked);
+				if (rec && rec.contentHash !== FOLDER_SENTINEL) return true;
+			}
+		}
+		return false;
+	}
+
 	private shouldSkip(path: string): boolean {
 		return isDotPath(path) || shouldExclude(path, this.settings.excludePatterns);
 	}
@@ -650,8 +661,14 @@ export class SyncEngine {
 				// Was tracked, gone from remote → delete local
 				actions.push({ type: "delete-folder-local", vaultPath: path });
 			} else if (localExists && !remote && !isTracked) {
-				// New local folder → create remote
-				actions.push({ type: "create-folder-remote", vaultPath: path });
+				if (this.folderContainsTrackedFiles(path)) {
+					// Folder has tracked files but no folder record → pre-folder-tracking era
+					// Remote folder gone → delete locally
+					actions.push({ type: "delete-folder-local", vaultPath: path });
+				} else {
+					// Genuinely new local folder → create remote
+					actions.push({ type: "create-folder-remote", vaultPath: path });
+				}
 			} else if (!localExists && remote && isTracked) {
 				// Was tracked, gone locally → delete remote
 				actions.push({ type: "delete-folder-remote", remoteId: remote.id, vaultPath: path });
