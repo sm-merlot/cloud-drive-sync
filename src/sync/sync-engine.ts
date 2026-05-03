@@ -346,6 +346,112 @@ export class SyncEngine {
 		}
 	}
 
+	async syncPaths(paths: Set<string>): Promise<SyncResult> {
+		if (this.syncing) {
+			return { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0 };
+		}
+
+		this.syncing = true;
+		const result: SyncResult = {
+			uploaded: 0,
+			downloaded: 0,
+			deleted: 0,
+			conflicts: 0,
+			errors: 0,
+		};
+
+		try {
+			// Gather remote files for just these paths
+			// We need the full remote listing to find matching files
+			const remoteFiles = await this.provider.listAllFiles();
+			const remoteMap = new Map<string, RemoteFileInfo>();
+			for (const f of remoteFiles) {
+				remoteMap.set(f.path, f);
+			}
+
+			const localMap = new Map<string, TFile>();
+			for (const path of paths) {
+				if (shouldExclude(path, this.settings.excludePatterns)) continue;
+				const file = this.app.vault.getAbstractFileByPath(path);
+				if (file instanceof TFile) {
+					localMap.set(path, file);
+				} else {
+					// File was deleted — still include path so computeActions handles it
+					localMap.delete(path);
+				}
+			}
+
+			// Build scoped action list — only for requested paths
+			const actions: SyncAction[] = [];
+			for (const path of paths) {
+				if (shouldExclude(path, this.settings.excludePatterns)) continue;
+
+				const local = localMap.get(path);
+				const remote = remoteMap.get(path);
+				const record = this.stateStore.getRecord(path);
+
+				if (local && remote && record) {
+					const localChanged = local.stat.mtime > record.localModTime;
+					const remoteChanged = remote.modifiedTime > record.remoteModTime;
+
+					if (localChanged && remoteChanged) {
+						actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+					} else if (localChanged) {
+						actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
+					} else if (remoteChanged) {
+						actions.push({ type: "update-local", vaultPath: path, remoteId: remote.id });
+					}
+				} else if (local && remote && !record) {
+					actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+				} else if (local && !remote && record) {
+					actions.push({ type: "delete-local", vaultPath: path });
+				} else if (local && !remote && !record) {
+					actions.push({ type: "upload", vaultPath: path });
+				} else if (!local && remote && record) {
+					actions.push({ type: "delete-remote", remoteId: remote.id, vaultPath: path });
+				} else if (!local && remote && !record) {
+					actions.push({ type: "download", vaultPath: path, remoteId: remote.id });
+				} else if (!local && !remote && record) {
+					this.stateStore.removeRecord(path);
+				}
+			}
+
+			// Execute
+			for (const action of actions) {
+				if (action.type === "conflict") continue;
+				try {
+					await this.executeAction(action, localMap, remoteMap);
+					this.countAction(action, result);
+				} catch (e) {
+					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
+					result.errors++;
+				}
+			}
+
+			for (const action of actions) {
+				if (action.type !== "conflict") continue;
+				try {
+					const resolved = await this.handleConflict(
+						action as SyncAction & { type: "conflict" },
+						localMap,
+						remoteMap
+					);
+					if (resolved) result.conflicts++;
+				} catch (e) {
+					console.error(`Conflict error on ${action.vaultPath}:`, e);
+					result.errors++;
+				}
+			}
+
+			this.stateStore.lastSyncTime = Date.now();
+			await this.stateStore.save();
+		} finally {
+			this.syncing = false;
+		}
+
+		return result;
+	}
+
 	private async ensureLocalFolder(path: string): Promise<void> {
 		const existing = this.app.vault.getAbstractFileByPath(path);
 		if (existing) return;

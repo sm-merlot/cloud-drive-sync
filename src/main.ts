@@ -1,4 +1,4 @@
-import { Notice, Plugin } from "obsidian";
+import { Notice, Plugin, TFile, TAbstractFile } from "obsidian";
 import { CloudSyncSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, type PluginSettings } from "./types";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
@@ -7,11 +7,17 @@ import { GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
 import { GoogleDriveProvider } from "./providers/google-drive/google-drive-provider";
 import { SyncEngine } from "./sync/sync-engine";
 import { SyncStateStore } from "./sync/sync-state";
+import { shouldExclude } from "./util/path";
+
+const DEBOUNCE_MS = 5000;
 
 export default class CloudSyncPlugin extends Plugin {
 	settings: PluginSettings = DEFAULT_SETTINGS;
 	private syncIntervalId: number | null = null;
 	private statusBarEl: HTMLElement | null = null;
+	private pendingPaths: Set<string> = new Set();
+	private debounceTimer: number | null = null;
+
 	async onload(): Promise<void> {
 		await this.loadSettings();
 
@@ -33,6 +39,7 @@ export default class CloudSyncPlugin extends Plugin {
 		this.updateStatusBar("idle");
 
 		this.setupSyncInterval();
+		this.setupFileWatcher();
 
 		if (this.settings.syncOnStartup) {
 			this.app.workspace.onLayoutReady(() => {
@@ -44,6 +51,83 @@ export default class CloudSyncPlugin extends Plugin {
 	onunload(): void {
 		if (this.syncIntervalId !== null) {
 			window.clearInterval(this.syncIntervalId);
+		}
+		if (this.debounceTimer !== null) {
+			window.clearTimeout(this.debounceTimer);
+		}
+	}
+
+	private setupFileWatcher(): void {
+		this.registerEvent(
+			this.app.vault.on("create", (file: TAbstractFile) => {
+				if (file instanceof TFile) this.queuePath(file.path);
+			})
+		);
+		this.registerEvent(
+			this.app.vault.on("modify", (file: TAbstractFile) => {
+				if (file instanceof TFile) this.queuePath(file.path);
+			})
+		);
+		this.registerEvent(
+			this.app.vault.on("delete", (file: TAbstractFile) => {
+				if (file instanceof TFile) this.queuePath(file.path);
+			})
+		);
+		this.registerEvent(
+			this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
+				if (file instanceof TFile) {
+					this.queuePath(oldPath);
+					this.queuePath(file.path);
+				}
+			})
+		);
+	}
+
+	private queuePath(path: string): void {
+		if (shouldExclude(path, this.settings.excludePatterns)) return;
+		// Don't queue if not configured
+		const gd = this.settings.googleDrive;
+		if (!gd.refreshToken || !gd.rootFolderId) return;
+		// Don't queue before first sync
+		if (this.settings.syncState.lastSyncTime === 0) return;
+
+		this.pendingPaths.add(path);
+
+		if (this.debounceTimer !== null) {
+			window.clearTimeout(this.debounceTimer);
+		}
+		this.debounceTimer = window.setTimeout(() => {
+			this.debounceTimer = null;
+			this.flushPendingSync();
+		}, DEBOUNCE_MS);
+	}
+
+	private async flushPendingSync(): Promise<void> {
+		if (this.pendingPaths.size === 0) return;
+
+		const paths = new Set(this.pendingPaths);
+		this.pendingPaths.clear();
+
+		const engine = this.getSyncEngine();
+		if (!engine) return;
+
+		this.updateStatusBar("syncing");
+		try {
+			const result = await engine.syncPaths(paths);
+			this.updateStatusBar("idle");
+			const total = result.uploaded + result.downloaded + result.deleted + result.conflicts;
+			if (total > 0 || result.errors > 0) {
+				const parts: string[] = [];
+				if (result.uploaded > 0) parts.push(`${result.uploaded} uploaded`);
+				if (result.downloaded > 0) parts.push(`${result.downloaded} downloaded`);
+				if (result.deleted > 0) parts.push(`${result.deleted} deleted`);
+				if (result.conflicts > 0) parts.push(`${result.conflicts} conflicts`);
+				if (result.errors > 0) parts.push(`${result.errors} errors`);
+				new Notice(`Sync: ${parts.join(", ")}`);
+			}
+		} catch (e) {
+			this.updateStatusBar("error");
+			console.error("File watcher sync failed:", e);
 		}
 	}
 
