@@ -108,6 +108,10 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 			? `Last sync: ${new Date(lastSync).toLocaleString()}`
 			: "Never synced";
 		containerEl.createEl("p", { text: statusText });
+		containerEl.createEl("p", {
+			text: `Version: ${BUILD_COMMIT_SHA}`,
+			cls: "setting-item-description",
+		});
 	}
 
 	private displayGoogleDriveSettings(containerEl: HTMLElement): void {
