@@ -51,7 +51,6 @@ export default class CloudSyncPlugin extends Plugin {
 		if (this.settings.syncOnStartup) {
 			this.app.workspace.onLayoutReady(async () => {
 				await this.runSync();
-				await this.checkForPluginUpdate();
 			});
 		}
 	}
@@ -219,6 +218,7 @@ export default class CloudSyncPlugin extends Plugin {
 			if (result.errors > 0) parts.push(`${result.errors} errors`);
 			if (parts.length === 0) parts.push("everything up to date");
 			new Notice(`Sync complete: ${parts.join(", ")}`);
+			await this.checkForPluginUpdate();
 		} catch (e) {
 			this.updateStatusBar("error");
 			new Notice(
