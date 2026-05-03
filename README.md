@@ -29,7 +29,7 @@ A personal-use Obsidian plugin that provides two-way sync between your vault and
 ### 1. Create a Google Cloud Project
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (e.g. "Obsidian Cloud Sync")
+2. Create a new project (e.g. "Obsidian Cloud Drive Sync")
 3. Enable the **Google Drive API**:
    - Go to **APIs & Services** > **Library**
    - Search for "Google Drive API"
