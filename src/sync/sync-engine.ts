@@ -1,4 +1,4 @@
-import { App, Notice, Platform, TFile } from "obsidian";
+import { App, Notice, Platform, TFile, TFolder } from "obsidian";
 import type { CloudProvider } from "../providers/cloud-provider";
 import type { SyncStateStore } from "./sync-state";
 import type { PluginSettings, RemoteFileInfo, SyncAction } from "../types";
@@ -6,6 +6,8 @@ import { FirstSyncModal, type FirstSyncStrategy } from "./first-sync-modal";
 import { SyncResultsModal, type SyncIssue, type SyncIssueResolution } from "./sync-results-modal";
 import { computeMD5 } from "../util/hash";
 import { getFileName, getParentPath, guessMimeType, isDotPath, shouldExclude } from "../util/path";
+
+const FOLDER_SENTINEL = "__folder__";
 
 export interface SyncResult {
 	uploaded: number;
@@ -60,26 +62,47 @@ export class SyncEngine {
 				this.firstSyncStrategy = null;
 			}
 
-			// 1. Gather local files
+			// 1. Gather local files and folders
 			const localFiles = this.getLocalFiles();
 			const localMap = new Map<string, TFile>();
 			for (const f of localFiles) {
 				localMap.set(f.path, f);
 			}
+			const localFolderPaths = this.getLocalFolderPaths();
 
-			// 2. Gather remote files
-			const remoteFiles = await this.provider.listAllFiles();
+			// 2. Gather remote files and folders
+			const allRemote = await this.provider.listAllFiles();
 			const remoteMap = new Map<string, RemoteFileInfo>();
-			for (const f of remoteFiles) {
-				remoteMap.set(f.path, f);
+			const remoteFolderMap = new Map<string, RemoteFileInfo>();
+			for (const f of allRemote) {
+				if (f.isFolder) {
+					remoteFolderMap.set(f.path, f);
+				} else {
+					remoteMap.set(f.path, f);
+				}
 			}
 
 			// 3. Compute actions
 			const actions = this.computeActions(localMap, remoteMap);
+			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
 
-			// 4. Execute non-conflict actions, collect issues
+			// 4. Phase 1: folder creates (depth ascending — parents first)
 			const issues: SyncIssue[] = [];
+			const folderCreates = folderActions
+				.filter(a => a.type === "create-folder-remote" || a.type === "create-folder-local")
+				.sort((a, b) => a.vaultPath.split("/").length - b.vaultPath.split("/").length);
 
+			for (const action of folderCreates) {
+				try {
+					await this.executeFolderAction(action);
+					this.countAction(action, result);
+				} catch (e) {
+					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
+					result.errors++;
+				}
+			}
+
+			// 5. Phase 2: file actions (non-conflict)
 			for (const action of actions) {
 				if (action.type === "conflict") continue;
 				try {
@@ -94,6 +117,21 @@ export class SyncEngine {
 						remoteId: "remoteId" in action ? action.remoteId : undefined,
 						errorMessage: msg,
 					});
+					result.errors++;
+				}
+			}
+
+			// 6. Phase 3: folder deletes (depth descending — children first)
+			const folderDeletes = folderActions
+				.filter(a => a.type === "delete-folder-remote" || a.type === "delete-folder-local")
+				.sort((a, b) => b.vaultPath.split("/").length - a.vaultPath.split("/").length);
+
+			for (const action of folderDeletes) {
+				try {
+					await this.executeFolderAction(action);
+					this.countAction(action, result);
+				} catch (e) {
+					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
 					result.errors++;
 				}
 			}
@@ -161,24 +199,62 @@ export class SyncEngine {
 		};
 
 		try {
-			const remoteFiles = await this.provider.listAllFiles();
+			const allRemote = await this.provider.listAllFiles();
 			const remoteMap = new Map<string, RemoteFileInfo>();
-			for (const f of remoteFiles) {
-				remoteMap.set(f.path, f);
-			}
-
-			const localMap = new Map<string, TFile>();
-			for (const path of paths) {
-				if (this.shouldSkip(path)) continue;
-				const file = this.app.vault.getAbstractFileByPath(path);
-				if (file instanceof TFile) {
-					localMap.set(path, file);
+			const remoteFolderMap = new Map<string, RemoteFileInfo>();
+			for (const f of allRemote) {
+				if (f.isFolder) {
+					remoteFolderMap.set(f.path, f);
+				} else {
+					remoteMap.set(f.path, f);
 				}
 			}
 
+			const localMap = new Map<string, TFile>();
+			const localFolderPaths = new Set<string>();
+			const folderPaths = new Set<string>();
+
+			for (const path of paths) {
+				if (this.shouldSkip(path)) continue;
+				const abstract = this.app.vault.getAbstractFileByPath(path);
+				if (abstract instanceof TFile) {
+					localMap.set(path, abstract);
+				} else if (abstract instanceof TFolder) {
+					localFolderPaths.add(path);
+					folderPaths.add(path);
+				} else {
+					// Deleted — check if it was a folder record
+					const record = this.stateStore.getRecord(path);
+					if (record?.contentHash === FOLDER_SENTINEL) {
+						folderPaths.add(path);
+					}
+				}
+			}
+
+			// Compute folder actions for folder paths
+			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
+			const relevantFolderActions = folderActions.filter(a => folderPaths.has(a.vaultPath));
+
+			// Phase 1: folder creates
+			const folderCreates = relevantFolderActions
+				.filter(a => a.type === "create-folder-remote" || a.type === "create-folder-local")
+				.sort((a, b) => a.vaultPath.split("/").length - b.vaultPath.split("/").length);
+
+			for (const action of folderCreates) {
+				try {
+					await this.executeFolderAction(action);
+					this.countAction(action, result);
+				} catch (e) {
+					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
+					result.errors++;
+				}
+			}
+
+			// Phase 2: file actions
 			const actions: SyncAction[] = [];
 			for (const path of paths) {
 				if (this.shouldSkip(path)) continue;
+				if (folderPaths.has(path)) continue;
 
 				const local = localMap.get(path);
 				const remote = remoteMap.get(path);
@@ -225,6 +301,21 @@ export class SyncEngine {
 						remoteId: "remoteId" in action ? action.remoteId : undefined,
 						errorMessage: msg,
 					});
+					result.errors++;
+				}
+			}
+
+			// Phase 3: folder deletes
+			const folderDeletes = relevantFolderActions
+				.filter(a => a.type === "delete-folder-remote" || a.type === "delete-folder-local")
+				.sort((a, b) => b.vaultPath.split("/").length - a.vaultPath.split("/").length);
+
+			for (const action of folderDeletes) {
+				try {
+					await this.executeFolderAction(action);
+					this.countAction(action, result);
+				} catch (e) {
+					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
 					result.errors++;
 				}
 			}
@@ -452,6 +543,22 @@ export class SyncEngine {
 			.filter((f) => !this.shouldSkip(f.path));
 	}
 
+	private getLocalFolderPaths(): Set<string> {
+		const paths = new Set<string>();
+		const walk = (folder: TFolder) => {
+			for (const child of folder.children) {
+				if (child instanceof TFolder) {
+					if (!this.shouldSkip(child.path)) {
+						paths.add(child.path);
+					}
+					walk(child);
+				}
+			}
+		};
+		walk(this.app.vault.getRoot());
+		return paths;
+	}
+
 	private computeActions(
 		localMap: Map<string, TFile>,
 		remoteMap: Map<string, RemoteFileInfo>
@@ -503,6 +610,103 @@ export class SyncEngine {
 		}
 
 		return actions;
+	}
+
+	private computeFolderActions(
+		localFolderPaths: Set<string>,
+		remoteFolderMap: Map<string, RemoteFileInfo>
+	): SyncAction[] {
+		const actions: SyncAction[] = [];
+		const allPaths = new Set<string>();
+
+		for (const p of localFolderPaths) allPaths.add(p);
+		for (const p of remoteFolderMap.keys()) allPaths.add(p);
+		for (const p of this.stateStore.getAllTrackedPaths()) {
+			const rec = this.stateStore.getRecord(p);
+			if (rec && rec.contentHash === FOLDER_SENTINEL) allPaths.add(p);
+		}
+
+		for (const path of allPaths) {
+			if (this.shouldSkip(path)) continue;
+
+			const localExists = localFolderPaths.has(path);
+			const remote = remoteFolderMap.get(path);
+			const record = this.stateStore.getRecord(path);
+			const isTracked = record && record.contentHash === FOLDER_SENTINEL;
+
+			if (localExists && remote && !isTracked) {
+				// Both exist, not tracked → start tracking
+				this.stateStore.setRecord(path, {
+					vaultPath: path,
+					remoteId: remote.id,
+					remoteFolderId: remote.parentId,
+					localModTime: Date.now(),
+					remoteModTime: remote.modifiedTime,
+					contentHash: FOLDER_SENTINEL,
+				});
+			} else if (localExists && remote && isTracked) {
+				// Both exist, tracked → nothing to do
+			} else if (localExists && !remote && isTracked) {
+				// Was tracked, gone from remote → delete local
+				actions.push({ type: "delete-folder-local", vaultPath: path });
+			} else if (localExists && !remote && !isTracked) {
+				// New local folder → create remote
+				actions.push({ type: "create-folder-remote", vaultPath: path });
+			} else if (!localExists && remote && isTracked) {
+				// Was tracked, gone locally → delete remote
+				actions.push({ type: "delete-folder-remote", remoteId: remote.id, vaultPath: path });
+			} else if (!localExists && remote && !isTracked) {
+				// New remote folder → create local
+				actions.push({ type: "create-folder-local", vaultPath: path, remoteId: remote.id });
+			} else if (!localExists && !remote && isTracked) {
+				// Gone from both → clean up record
+				this.stateStore.removeRecord(path);
+			}
+		}
+
+		return actions;
+	}
+
+	private async executeFolderAction(action: SyncAction): Promise<void> {
+		switch (action.type) {
+			case "create-folder-remote": {
+				const folderId = await this.provider.getRemoteFolderId(action.vaultPath);
+				this.stateStore.setRecord(action.vaultPath, {
+					vaultPath: action.vaultPath,
+					remoteId: folderId,
+					remoteFolderId: "",
+					localModTime: Date.now(),
+					remoteModTime: Date.now(),
+					contentHash: FOLDER_SENTINEL,
+				});
+				break;
+			}
+			case "create-folder-local": {
+				await this.ensureLocalFolder(action.vaultPath);
+				this.stateStore.setRecord(action.vaultPath, {
+					vaultPath: action.vaultPath,
+					remoteId: action.remoteId,
+					remoteFolderId: "",
+					localModTime: Date.now(),
+					remoteModTime: Date.now(),
+					contentHash: FOLDER_SENTINEL,
+				});
+				break;
+			}
+			case "delete-folder-local": {
+				const folder = this.app.vault.getAbstractFileByPath(action.vaultPath);
+				if (folder instanceof TFolder) {
+					await this.app.vault.trash(folder, true);
+				}
+				this.stateStore.removeRecord(action.vaultPath);
+				break;
+			}
+			case "delete-folder-remote": {
+				await this.provider.deleteFile(action.remoteId);
+				this.stateStore.removeRecord(action.vaultPath);
+				break;
+			}
+		}
 	}
 
 	private async executeAction(
@@ -628,14 +832,18 @@ export class SyncEngine {
 		switch (action.type) {
 			case "upload":
 			case "update-remote":
+			case "create-folder-remote":
 				result.uploaded++;
 				break;
 			case "download":
 			case "update-local":
+			case "create-folder-local":
 				result.downloaded++;
 				break;
 			case "delete-local":
 			case "delete-remote":
+			case "delete-folder-local":
+			case "delete-folder-remote":
 				result.deleted++;
 				break;
 		}

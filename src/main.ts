@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, TAbstractFile } from "obsidian";
+import { Notice, Plugin, TFile, TFolder, TAbstractFile } from "obsidian";
 import { CloudSyncSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, type PluginSettings } from "./types";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
@@ -68,7 +68,7 @@ export default class CloudSyncPlugin extends Plugin {
 	private setupFileWatcher(): void {
 		this.registerEvent(
 			this.app.vault.on("create", (file: TAbstractFile) => {
-				if (file instanceof TFile) this.queuePath(file.path);
+				if (file instanceof TFile || file instanceof TFolder) this.queuePath(file.path);
 			})
 		);
 		this.registerEvent(
@@ -78,12 +78,12 @@ export default class CloudSyncPlugin extends Plugin {
 		);
 		this.registerEvent(
 			this.app.vault.on("delete", (file: TAbstractFile) => {
-				if (file instanceof TFile) this.queuePath(file.path);
+				if (file instanceof TFile || file instanceof TFolder) this.queuePath(file.path);
 			})
 		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
-				if (file instanceof TFile) {
+				if (file instanceof TFile || file instanceof TFolder) {
 					this.queuePath(oldPath);
 					this.queuePath(file.path);
 				}

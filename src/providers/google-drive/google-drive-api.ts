@@ -95,6 +95,16 @@ export class GoogleDriveApi {
 
 				if (isFolder) {
 					queue.push({ folderId: f.id, pathPrefix: filePath });
+					result.push({
+						id: f.id,
+						name: f.name,
+						path: filePath,
+						modifiedTime: new Date(f.modifiedTime).getTime(),
+						md5Checksum: "",
+						mimeType: f.mimeType,
+						isFolder: true,
+						parentId: f.parents?.[0] || item.folderId,
+					});
 				} else {
 					result.push({
 						id: f.id,

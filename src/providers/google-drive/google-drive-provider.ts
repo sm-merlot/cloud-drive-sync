@@ -25,11 +25,15 @@ export class GoogleDriveProvider implements CloudProvider {
 	async listAllFiles(): Promise<RemoteFileInfo[]> {
 		this.folderIdCache.clear();
 		const files = await this.api.listAllFilesRecursive(this.rootFolderId);
-		// Build folder cache from file paths
+		// Build folder cache from folder entries and file parent paths
 		for (const f of files) {
-			const dir = f.path.includes("/") ? f.path.substring(0, f.path.lastIndexOf("/")) : "";
-			if (dir && f.parentId) {
-				this.folderIdCache.set(dir, f.parentId);
+			if (f.isFolder) {
+				this.folderIdCache.set(f.path, f.id);
+			} else {
+				const dir = f.path.includes("/") ? f.path.substring(0, f.path.lastIndexOf("/")) : "";
+				if (dir && f.parentId) {
+					this.folderIdCache.set(dir, f.parentId);
+				}
 			}
 		}
 		return files;

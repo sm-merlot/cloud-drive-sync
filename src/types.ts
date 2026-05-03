@@ -63,7 +63,11 @@ export type SyncAction =
 	| { type: "update-local"; vaultPath: string; remoteId: string }
 	| { type: "delete-remote"; remoteId: string; vaultPath: string }
 	| { type: "delete-local"; vaultPath: string }
-	| { type: "conflict"; vaultPath: string; remoteId: string };
+	| { type: "conflict"; vaultPath: string; remoteId: string }
+	| { type: "create-folder-remote"; vaultPath: string }
+	| { type: "create-folder-local"; vaultPath: string; remoteId: string }
+	| { type: "delete-folder-remote"; remoteId: string; vaultPath: string }
+	| { type: "delete-folder-local"; vaultPath: string };
 
 export interface RemoteFileInfo {
 	id: string;
