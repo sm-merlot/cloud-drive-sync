@@ -62,7 +62,7 @@ npm install
 npm run build
 ```
 
-This produces `main.js` in the project root.
+This produces `main.js` in the project root. `styles.css` is already in the repo root.
 
 ### 5. Install the Plugin
 
@@ -75,7 +75,7 @@ The plugin must be manually installed into each vault's `.obsidian/plugins/cloud
 mkdir -p /path/to/your/vault/.obsidian/plugins/cloud-drive-sync
 
 # Copy the plugin files
-cp main.js manifest.json /path/to/your/vault/.obsidian/plugins/cloud-drive-sync/
+cp main.js manifest.json styles.css /path/to/your/vault/.obsidian/plugins/cloud-drive-sync/
 ```
 
 For development, symlink instead of copying:
@@ -83,6 +83,7 @@ For development, symlink instead of copying:
 ```bash
 ln -s /path/to/obsidian-cloud-sync/main.js /path/to/vault/.obsidian/plugins/cloud-drive-sync/main.js
 ln -s /path/to/obsidian-cloud-sync/manifest.json /path/to/vault/.obsidian/plugins/cloud-drive-sync/manifest.json
+ln -s /path/to/obsidian-cloud-sync/styles.css /path/to/vault/.obsidian/plugins/cloud-drive-sync/styles.css
 ```
 
 Then run `npm run dev` for auto-rebuild on changes.
@@ -92,7 +93,7 @@ Then run `npm run dev` for auto-rebuild on changes.
 1. Connect your device via USB or use a file manager app
 2. Navigate to your vault folder (usually in `Internal Storage/`)
 3. Create `.obsidian/plugins/cloud-drive-sync/` if it doesn't exist
-4. Copy `main.js` and `manifest.json` into that folder
+4. Copy `main.js`, `manifest.json`, and `styles.css` into that folder
 5. Restart Obsidian
 
 #### iOS / iPadOS
@@ -125,10 +126,30 @@ To update the plugin on all devices without manual file copying:
 
 1. Build the plugin on your desktop: `npm run build`
 2. In Google Drive, create a folder called `.cloud-drive-sync` inside your sync root folder
-3. Upload `main.js` and `manifest.json` to that folder
-4. On each device, the plugin checks this folder on startup (after sync) and auto-updates if the files have changed
+3. Upload `main.js`, `manifest.json`, and `styles.css` to that folder
+4. On each device, the plugin checks this folder after every manual sync and on startup, auto-updating and reloading if files have changed
 
-You can also trigger a manual check via the command palette: **Cloud Drive Sync: Check for plugin update**
+The `.cloud-drive-sync` folder is excluded from vault sync (dotfolder), so it only contains plugin build artifacts and won't appear in your vault.
+
+### What gets updated
+
+The auto-updater compares MD5 hashes of the following files between your installed plugin and the Drive folder:
+
+| File | Purpose |
+|------|---------|
+| `main.js` | Plugin code |
+| `manifest.json` | Plugin metadata/version |
+| `styles.css` | Plugin styles |
+
+If any file differs, all three are downloaded and the plugin reloads automatically.
+
+### When updates are checked
+
+- **On startup** — if "Sync on startup" is enabled
+- **After manual sync** — clicking the status bar icon, ribbon icon, or using the command palette
+- **On demand** — via command palette: **Cloud Drive Sync: Check for plugin update**
+
+Auto-sync (interval and file watcher) does **not** check for updates to avoid unnecessary API calls.
 
 ## Usage
 
