@@ -1,3 +1,8 @@
+/* Hide Obsidian's built-in sync status icon */
+.status-bar-item.mod-clickable.sync-status-icon {
+	display: none;
+}
+
 .cloud-sync-syncing .cloud-sync-icon svg {
 	animation: cloud-sync-spin 1s linear infinite;
 }
