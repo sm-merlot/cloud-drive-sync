@@ -1,0 +1,33 @@
+src/updater.ts
+  14b80bfcf62630ec 1-109
+src/util/path.ts
+  14b80bfcf62630ec 42-49
+tests/path.test.ts
+  14b80bfcf62630ec 2,18-39
+src/main.ts
+  14b80bfcf62630ec 10-11,39-44,52-54,95,250-266
+src/sync/sync-engine.ts
+  14b80bfcf62630ec 8,172,181,445-448,452,467
+src/types.ts
+  14b80bfcf62630ec 49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "dac67f6b30814e8c808ce4e4dd1ef06e5138bd05",
+  "prompts": {
+    "14b80bfcf62630ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "92764d2d-a59d-42da-960b-a675abc73142",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "scme0",
+      "messages": [],
+      "total_additions": 244,
+      "total_deletions": 76,
+      "accepted_lines": 179,
+      "overriden_lines": 0
+    }
+  }
+}
