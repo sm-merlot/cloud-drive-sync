@@ -3,6 +3,7 @@ import type { CloudProvider } from "../providers/cloud-provider";
 import type { SyncStateStore } from "./sync-state";
 import type { PluginSettings, RemoteFileInfo, SyncAction } from "../types";
 import { ConflictModal } from "./conflict-modal";
+import { FirstSyncModal, type FirstSyncStrategy } from "./first-sync-modal";
 import { computeMD5 } from "../util/hash";
 import { getFileName, getParentPath, guessMimeType, shouldExclude } from "../util/path";
 
@@ -20,6 +21,7 @@ export class SyncEngine {
 	private stateStore: SyncStateStore;
 	private settings: PluginSettings;
 	private syncing = false;
+	private firstSyncStrategy: FirstSyncStrategy | null = null;
 
 	constructor(
 		app: App,
@@ -49,6 +51,15 @@ export class SyncEngine {
 		};
 
 		try {
+			// 0. First sync — ask user for strategy
+			const isFirstSync = this.stateStore.lastSyncTime === 0;
+			if (isFirstSync) {
+				const modal = new FirstSyncModal(this.app);
+				this.firstSyncStrategy = await modal.openAndWait();
+			} else {
+				this.firstSyncStrategy = null;
+			}
+
 			// 1. Gather local files
 			const localFiles = this.getLocalFiles();
 			const localMap = new Map<string, TFile>();
@@ -138,8 +149,15 @@ export class SyncEngine {
 				}
 				// Neither changed → skip
 			} else if (local && remote && !record) {
-				// Both exist but not tracked (first sync) — compare content
-				actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+				// Both exist but not tracked (first sync)
+				if (this.firstSyncStrategy === "download") {
+					actions.push({ type: "update-local", vaultPath: path, remoteId: remote.id });
+				} else if (this.firstSyncStrategy === "upload") {
+					actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
+				} else {
+					// merge or normal — treat as conflict
+					actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+				}
 			} else if (local && !remote && record) {
 				// Was tracked, remote deleted → delete local
 				actions.push({ type: "delete-local", vaultPath: path });
