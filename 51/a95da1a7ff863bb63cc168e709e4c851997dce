@@ -1,0 +1,23 @@
+src/sync/sync-engine.ts
+  2c954205b8aa2340 87,235,626,629,669-673
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "51a95da1a7ff863bb63cc168e709e4c851997dce",
+  "prompts": {
+    "2c954205b8aa2340": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d1410908-1a9b-4a13-9f25-501bb0211341",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "scme0",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 16,
+      "accepted_lines": 9,
+      "overriden_lines": 0
+    }
+  }
+}
