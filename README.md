@@ -49,7 +49,7 @@ A personal-use Obsidian plugin that provides two-way sync between your vault and
 1. Go to **APIs & Services** > **Credentials**
 2. Click **Create Credentials** > **OAuth client ID**
 3. Application type: **Web application**
-4. Add an **Authorized redirect URI**: `https://scme0.github.io/obsidian-cloud-sync`
+4. Add an **Authorized redirect URI**: `https://cloud-drive-sync.pages.dev/`
 5. Click **Create**
 6. Note the **Client ID** and **Client Secret**
 
@@ -176,6 +176,27 @@ When a file is modified both locally and on Drive between syncs, a results modal
 
 Bulk actions ("All Local", "All Remote") are available at the top.
 
+## OAuth Redirect Page
+
+The OAuth redirect page lives at `docs/index.html` and is hosted on **Cloudflare Pages** at `https://cloud-drive-sync.pages.dev/`.
+
+It receives the `?code=` parameter from Google after the user authorises the app, displays it, and auto-copies it to the clipboard so the user can paste it back into Obsidian.
+
+### Updating the redirect page
+
+1. Edit `docs/index.html`
+2. Go to [Cloudflare Pages](https://dash.cloudflare.com/) → **Workers & Pages** → **cloud-drive-sync**
+3. **Deployments** → **Upload assets** (or push to the connected Git branch if using Git deploy)
+4. Upload the updated `docs/index.html`
+
+### Changing the redirect URI
+
+If the Cloudflare Pages URL ever changes:
+
+1. Update `REDIRECT_URI` in `src/providers/google-drive/google-drive-auth.ts`
+2. Update the **Authorized redirect URI** in [Google Cloud Console](https://console.cloud.google.com/) → **APIs & Services** → **Credentials** → your OAuth client
+3. Update this README
+
 ## Development
 
 ```bash
@@ -219,7 +240,7 @@ src/
     hash.ts                        # MD5 implementation
     path.ts                        # Path helpers, glob matching
 docs/
-  index.html                       # GitHub Pages OAuth redirect
+  index.html                       # Cloudflare Pages OAuth redirect (https://cloud-drive-sync.pages.dev/)
 tests/
   hash.test.ts                     # MD5 tests
   path.test.ts                     # Path utility tests

@@ -1,7 +1,7 @@
 import { requestUrl } from "obsidian";
 import type { GoogleDriveSettings } from "../../types";
 
-const REDIRECT_URI = "https://scme0.github.io/obsidian-cloud-sync";
+const REDIRECT_URI = "https://cloud-drive-sync.pages.dev/";
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const SCOPE = "https://www.googleapis.com/auth/drive";
