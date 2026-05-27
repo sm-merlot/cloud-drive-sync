@@ -159,7 +159,7 @@ export class SyncEngine {
 			const nonConflictActions = actions.filter((a) => a.type !== "conflict");
 			if (this.settings.debugMode) {
 				const planModal = new SyncPlanModal(
-					this.app, nonConflictActions, conflictIssues, "skip",
+					this.app, [...nonConflictActions, ...folderActions], conflictIssues, "skip",
 					Platform.isDesktop && !!this.settings.mergeToolCommand,
 				);
 				const plan = await planModal.openAndWait();
