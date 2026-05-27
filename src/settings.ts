@@ -122,6 +122,21 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 				);
 		}
 
+		// --- Debug ---
+		containerEl.createEl("h3", { text: "Debug" });
+
+		new Setting(containerEl)
+			.setName("Debug mode")
+			.setDesc("Show all planned changes before every sync — useful for diagnosing unexpected uploads/downloads")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.debugMode ?? false)
+					.onChange(async (value) => {
+						this.plugin.settings.debugMode = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		// --- Status ---
 		containerEl.createEl("h3", { text: "Status" });
 		const lastSync = this.plugin.settings.syncState.lastSyncTime;

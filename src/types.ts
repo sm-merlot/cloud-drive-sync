@@ -42,6 +42,7 @@ export interface PluginSettings {
 	excludePatterns: string[];
 	mergeToolCommand: string;
 	conflictStrategy: ConflictStrategy;
+	debugMode: boolean;
 	syncState: SyncState;
 }
 
@@ -64,6 +65,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 		region: "us-east-1",
 	},
 	conflictStrategy: "prompt",
+	debugMode: false,
 	syncIntervalMinutes: 15,
 	syncOnStartup: false,
 	excludePatterns: [],

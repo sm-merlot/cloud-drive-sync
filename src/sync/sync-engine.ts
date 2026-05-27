@@ -4,6 +4,7 @@ import type { SyncStateStore } from "./sync-state";
 import type { PluginSettings, RemoteFileInfo, SyncAction } from "../types";
 import { FirstSyncModal, type FirstSyncStrategy } from "./first-sync-modal";
 import { SyncResultsModal, type SyncIssue, type SyncIssueResolution } from "./sync-results-modal";
+import { SyncPlanModal } from "./sync-plan-modal";
 import { computeMD5 } from "../util/hash";
 import { getFileName, getParentPath, guessMimeType, isDotPath, shouldExclude } from "../util/path";
 import { merge2way } from "../util/merge";
@@ -154,10 +155,20 @@ export class SyncEngine {
 				}
 			}
 
-			// 5. Execute folder creates (parents first)
+			// 5. Debug mode — show plan modal before executing so user can see what's changing
+			const nonConflictActions = actions.filter((a) => a.type !== "conflict");
+			if (this.settings.debugMode) {
+				const planModal = new SyncPlanModal(
+					this.app, nonConflictActions, conflictIssues, "skip",
+					Platform.isDesktop && !!this.settings.mergeToolCommand,
+				);
+				const plan = await planModal.openAndWait();
+				if (plan.cancelled) return result;
+			}
+
+			// 6. Execute folder creates (parents first)
 			this.progress("Syncing...");
 			const issues: SyncIssue[] = [];
-			const nonConflictActions = actions.filter((a) => a.type !== "conflict");
 			const folderCreates = folderActions
 				.filter(a => a.type === "create-folder-remote" || a.type === "create-folder-local")
 				.sort((a, b) => a.vaultPath.split("/").length - b.vaultPath.split("/").length);
