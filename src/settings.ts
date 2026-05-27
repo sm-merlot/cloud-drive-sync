@@ -1,6 +1,7 @@
 import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import type CloudSyncPlugin from "./main";
 import { GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
+import { S3Provider } from "./providers/s3/s3-provider";
 
 export class CloudSyncSettingTab extends PluginSettingTab {
 	plugin: CloudSyncPlugin;
@@ -23,10 +24,11 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 			.addDropdown((drop) =>
 				drop
 					.addOption("google-drive", "Google Drive")
+					.addOption("s3", "S3 / rclone")
 					.addOption("proton-drive", "Proton Drive (coming soon)")
 					.setValue(this.plugin.settings.provider)
 					.onChange(async (value) => {
-						this.plugin.settings.provider = value as "google-drive" | "proton-drive";
+						this.plugin.settings.provider = value as "google-drive" | "s3" | "proton-drive";
 						await this.plugin.saveSettings();
 						this.display();
 					})
@@ -34,10 +36,29 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 
 		if (this.plugin.settings.provider === "google-drive") {
 			this.displayGoogleDriveSettings(containerEl);
+		} else if (this.plugin.settings.provider === "s3") {
+			this.displayS3Settings(containerEl);
 		}
 
 		// --- Sync Settings ---
 		containerEl.createEl("h3", { text: "Sync" });
+
+		new Setting(containerEl)
+			.setName("Conflict strategy")
+			.setDesc("How to handle files modified on both sides since last sync")
+			.addDropdown((drop) =>
+				drop
+					.addOption("prompt", "Prompt — review each conflict")
+					.addOption("smart-merge", "Smart merge — auto-merge non-overlapping changes")
+					.addOption("latest-wins", "Latest wins — newer timestamp takes priority")
+					.addOption("use-local", "Always use local")
+					.addOption("use-remote", "Always use remote")
+					.setValue(this.plugin.settings.conflictStrategy ?? "prompt")
+					.onChange(async (value) => {
+						this.plugin.settings.conflictStrategy = value as "prompt" | "latest-wins" | "use-local" | "use-remote";
+						await this.plugin.saveSettings();
+					})
+			);
 
 		new Setting(containerEl)
 			.setName("Sync interval (minutes)")
@@ -112,6 +133,103 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 			text: `Version: ${BUILD_COMMIT_SHA}`,
 			cls: "setting-item-description",
 		});
+	}
+
+	private displayS3Settings(containerEl: HTMLElement): void {
+		containerEl.createEl("h3", { text: "S3 / rclone" });
+
+		const s3 = this.plugin.settings.s3;
+
+		new Setting(containerEl)
+			.setName("Endpoint")
+			.setDesc("Base URL of your rclone serve s3 instance, e.g. https://scott-notes.merlot.family")
+			.addText((text) =>
+				text
+					.setPlaceholder("https://notes.example.com")
+					.setValue(s3.endpoint)
+					.onChange(async (value) => {
+						this.plugin.settings.s3.endpoint = value.replace(/\/$/, "");
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Bucket")
+			.setDesc("S3 bucket name — for rclone this is the first-level directory served")
+			.addText((text) =>
+				text
+					.setPlaceholder("Notes")
+					.setValue(s3.bucket)
+					.onChange(async (value) => {
+						this.plugin.settings.s3.bucket = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Access key")
+			.addText((text) =>
+				text
+					.setPlaceholder("access key")
+					.setValue(s3.accessKey)
+					.onChange(async (value) => {
+						this.plugin.settings.s3.accessKey = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Secret key")
+			.addText((text) => {
+				text
+					.setPlaceholder("secret key")
+					.setValue(s3.secretKey)
+					.onChange(async (value) => {
+						this.plugin.settings.s3.secretKey = value;
+						await this.plugin.saveSettings();
+					});
+				text.inputEl.type = "password";
+			});
+
+		new Setting(containerEl)
+			.setName("Region")
+			.setDesc("Ignored by rclone but required by the S3 signing spec")
+			.addText((text) =>
+				text
+					.setPlaceholder("us-east-1")
+					.setValue(s3.region)
+					.onChange(async (value) => {
+						this.plugin.settings.s3.region = value || "us-east-1";
+						await this.plugin.saveSettings();
+					})
+			);
+
+		const isConfigured = s3.endpoint && s3.bucket && s3.accessKey && s3.secretKey;
+		new Setting(containerEl)
+			.setName("Test connection")
+			.addButton((btn) =>
+				btn
+					.setButtonText("Test")
+					.setDisabled(!isConfigured)
+					.onClick(async () => {
+						btn.setButtonText("Testing...").setDisabled(true);
+						try {
+							const provider = new S3Provider({
+								endpoint: s3.endpoint,
+								bucket: s3.bucket,
+								accessKey: s3.accessKey,
+								secretKey: s3.secretKey,
+								region: s3.region,
+							});
+							const ok = await provider.testConnection();
+							new Notice(ok ? "S3 connection successful" : "S3 connection failed — check endpoint and credentials");
+						} catch (e) {
+							new Notice(`S3 connection error: ${e instanceof Error ? e.message : String(e)}`);
+						} finally {
+							btn.setButtonText("Test").setDisabled(false);
+						}
+					})
+			);
 	}
 
 	private displayGoogleDriveSettings(containerEl: HTMLElement): void {

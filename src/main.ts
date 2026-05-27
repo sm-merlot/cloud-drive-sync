@@ -5,19 +5,31 @@ import { FolderPickerModal } from "./sync/folder-picker-modal";
 import { GoogleDriveApi } from "./providers/google-drive/google-drive-api";
 import { GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
 import { GoogleDriveProvider } from "./providers/google-drive/google-drive-provider";
+import { S3Provider } from "./providers/s3/s3-provider";
 import { SyncEngine } from "./sync/sync-engine";
 import { SyncStateStore } from "./sync/sync-state";
 import { PluginUpdater } from "./updater";
 import { isDotPath, shouldExclude } from "./util/path";
 
 const DEBOUNCE_MS = 5000;
+const STATUS_REFRESH_MS = 60_000;
+
+function relativeTime(ms: number): string {
+	const diff = Date.now() - ms;
+	if (diff < 60_000) return "just now";
+	if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+	if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+	return new Date(ms).toLocaleDateString();
+}
 
 export default class CloudSyncPlugin extends Plugin {
 	settings: PluginSettings = DEFAULT_SETTINGS;
 	private syncIntervalId: number | null = null;
+	private statusRefreshId: number | null = null;
 	private statusBarEl: HTMLElement | null = null;
 	private pendingPaths: Set<string> = new Set();
 	private debounceTimer: number | null = null;
+	private currentStage = "";
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -49,6 +61,7 @@ export default class CloudSyncPlugin extends Plugin {
 		this.updateStatusBar("idle");
 
 		this.setupSyncInterval();
+		this.setupStatusRefresh();
 		this.setupFileWatcher();
 
 		if (this.settings.syncOnStartup) {
@@ -59,12 +72,9 @@ export default class CloudSyncPlugin extends Plugin {
 	}
 
 	onunload(): void {
-		if (this.syncIntervalId !== null) {
-			window.clearInterval(this.syncIntervalId);
-		}
-		if (this.debounceTimer !== null) {
-			window.clearTimeout(this.debounceTimer);
-		}
+		if (this.syncIntervalId !== null) window.clearInterval(this.syncIntervalId);
+		if (this.statusRefreshId !== null) window.clearInterval(this.statusRefreshId);
+		if (this.debounceTimer !== null) window.clearTimeout(this.debounceTimer);
 	}
 
 	private setupFileWatcher(): void {
@@ -93,11 +103,18 @@ export default class CloudSyncPlugin extends Plugin {
 		);
 	}
 
+	private isConfigured(): boolean {
+		if (this.settings.provider === "s3") {
+			const s3 = this.settings.s3;
+			return !!(s3.endpoint && s3.bucket && s3.accessKey && s3.secretKey);
+		}
+		const gd = this.settings.googleDrive;
+		return !!(gd.refreshToken && gd.rootFolderId);
+	}
+
 	private queuePath(path: string): void {
 		if (isDotPath(path) || shouldExclude(path, this.settings.excludePatterns)) return;
-		// Don't queue if not configured
-		const gd = this.settings.googleDrive;
-		if (!gd.refreshToken || !gd.rootFolderId) return;
+		if (!this.isConfigured()) return;
 		// Don't queue before first sync
 		if (this.settings.syncState.lastSyncTime === 0) return;
 
@@ -143,12 +160,19 @@ export default class CloudSyncPlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-		// Ensure nested objects are merged properly
 		this.settings.googleDrive = Object.assign(
 			{},
 			DEFAULT_SETTINGS.googleDrive,
 			this.settings.googleDrive
 		);
+		this.settings.s3 = Object.assign(
+			{},
+			DEFAULT_SETTINGS.s3,
+			this.settings.s3
+		);
+		if (!this.settings.conflictStrategy) {
+			this.settings.conflictStrategy = DEFAULT_SETTINGS.conflictStrategy;
+		}
 		this.settings.syncState = Object.assign(
 			{},
 			DEFAULT_SETTINGS.syncState,
@@ -161,6 +185,14 @@ export default class CloudSyncPlugin extends Plugin {
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
+	}
+
+	setupStatusRefresh(): void {
+		if (this.statusRefreshId !== null) window.clearInterval(this.statusRefreshId);
+		this.statusRefreshId = window.setInterval(() => {
+			if (this.currentStage === "idle") this.updateStatusBar("idle");
+		}, STATUS_REFRESH_MS);
+		this.registerInterval(this.statusRefreshId);
 	}
 
 	setupSyncInterval(): void {
@@ -180,8 +212,25 @@ export default class CloudSyncPlugin extends Plugin {
 	}
 
 	private getSyncEngine(): SyncEngine | null {
+		if (this.settings.provider === "s3") {
+			const s3 = this.settings.s3;
+			if (!s3.endpoint || !s3.bucket || !s3.accessKey || !s3.secretKey) {
+				new Notice("Configure S3 in plugin settings first");
+				return null;
+			}
+			const provider = new S3Provider({
+				endpoint: s3.endpoint,
+				bucket: s3.bucket,
+				accessKey: s3.accessKey,
+				secretKey: s3.secretKey,
+				region: s3.region || "us-east-1",
+			});
+			const stateStore = new SyncStateStore(this.settings.syncState, () => this.saveSettings());
+			return new SyncEngine(this.app, provider, stateStore, this.settings);
+		}
+
 		if (this.settings.provider !== "google-drive") {
-			new Notice("Only Google Drive is supported currently");
+			new Notice("Only Google Drive and S3 are supported currently");
 			return null;
 		}
 
@@ -209,9 +258,16 @@ export default class CloudSyncPlugin extends Plugin {
 		const engine = this.getSyncEngine();
 		if (!engine) return;
 
-		this.updateStatusBar("syncing");
+		engine.onProgress = (msg) => {
+			this.currentStage = "syncing";
+			this.updateStatusBar("syncing", msg);
+		};
+
+		this.currentStage = "syncing";
+		this.updateStatusBar("syncing", "Connecting...");
 		try {
 			const result = await engine.sync();
+			this.currentStage = "idle";
 			this.updateStatusBar("idle");
 			const parts: string[] = [];
 			if (result.uploaded > 0) parts.push(`${result.uploaded} uploaded`);
@@ -223,6 +279,7 @@ export default class CloudSyncPlugin extends Plugin {
 			new Notice(`Sync complete: ${parts.join(", ")}`);
 			await this.checkForPluginUpdate();
 		} catch (e) {
+			this.currentStage = "idle";
 			this.updateStatusBar("error");
 			new Notice(
 				`Sync failed: ${e instanceof Error ? e.message : String(e)}`
@@ -267,7 +324,7 @@ export default class CloudSyncPlugin extends Plugin {
 		}
 	}
 
-	private updateStatusBar(state: "idle" | "syncing" | "error"): void {
+	private updateStatusBar(state: "idle" | "syncing" | "error", stageMsg?: string): void {
 		if (!this.statusBarEl) return;
 		this.statusBarEl.empty();
 
@@ -276,17 +333,16 @@ export default class CloudSyncPlugin extends Plugin {
 
 		switch (state) {
 			case "idle": {
+				this.currentStage = "idle";
 				setIcon(iconSpan, "cloud");
 				const last = this.settings.syncState.lastSyncTime;
-				textSpan.setText(
-					last ? `Synced ${new Date(last).toLocaleTimeString()}` : "Cloud Sync"
-				);
+				textSpan.setText(last ? `Synced ${relativeTime(last)}` : "Cloud Sync");
 				this.statusBarEl.classList.remove("cloud-sync-syncing", "cloud-sync-error");
 				break;
 			}
 			case "syncing":
 				setIcon(iconSpan, "refresh-cw");
-				textSpan.setText("Syncing...");
+				textSpan.setText(stageMsg ?? "Syncing...");
 				this.statusBarEl.classList.add("cloud-sync-syncing");
 				this.statusBarEl.classList.remove("cloud-sync-error");
 				break;

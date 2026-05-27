@@ -23,13 +23,25 @@ export interface GoogleDriveSettings {
 	tokenExpiry: number;
 }
 
+export interface S3Settings {
+	endpoint: string;
+	bucket: string;
+	accessKey: string;
+	secretKey: string;
+	region: string;
+}
+
+export type ConflictStrategy = "prompt" | "smart-merge" | "latest-wins" | "use-local" | "use-remote";
+
 export interface PluginSettings {
-	provider: "google-drive" | "proton-drive";
+	provider: "google-drive" | "s3" | "proton-drive";
 	googleDrive: GoogleDriveSettings;
+	s3: S3Settings;
 	syncIntervalMinutes: number;
 	syncOnStartup: boolean;
 	excludePatterns: string[];
 	mergeToolCommand: string;
+	conflictStrategy: ConflictStrategy;
 	syncState: SyncState;
 }
 
@@ -44,6 +56,14 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 		refreshToken: "",
 		tokenExpiry: 0,
 	},
+	s3: {
+		endpoint: "",
+		bucket: "",
+		accessKey: "",
+		secretKey: "",
+		region: "us-east-1",
+	},
+	conflictStrategy: "prompt",
 	syncIntervalMinutes: 15,
 	syncOnStartup: false,
 	excludePatterns: [],

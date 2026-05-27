@@ -1,11 +1,13 @@
 import { App, Notice, Platform, TFile, TFolder } from "obsidian";
 import type { CloudProvider } from "../providers/cloud-provider";
 import type { SyncStateStore } from "./sync-state";
-import type { PluginSettings, RemoteFileInfo, SyncAction } from "../types";
+import type { ConflictResolution, PluginSettings, RemoteFileInfo, SyncAction } from "../types";
 import { FirstSyncModal, type FirstSyncStrategy } from "./first-sync-modal";
 import { SyncResultsModal, type SyncIssue, type SyncIssueResolution } from "./sync-results-modal";
+import { SyncPlanModal } from "./sync-plan-modal";
 import { computeMD5 } from "../util/hash";
 import { getFileName, getParentPath, guessMimeType, isDotPath, shouldExclude } from "../util/path";
+import { merge2way } from "../util/merge";
 
 const FOLDER_SENTINEL = "__folder__";
 
@@ -24,6 +26,7 @@ export class SyncEngine {
 	private settings: PluginSettings;
 	private syncing = false;
 	private firstSyncStrategy: FirstSyncStrategy | null = null;
+	onProgress?: (message: string) => void;
 
 	constructor(
 		app: App,
@@ -35,6 +38,10 @@ export class SyncEngine {
 		this.provider = provider;
 		this.stateStore = stateStore;
 		this.settings = settings;
+	}
+
+	private progress(message: string): void {
+		this.onProgress?.(message);
 	}
 
 	async sync(): Promise<SyncResult> {
@@ -62,31 +69,74 @@ export class SyncEngine {
 				this.firstSyncStrategy = null;
 			}
 
-			// 1. Gather local files and folders
+			// 1. Gather local state
+			this.progress("Listing local files...");
 			const localFiles = this.getLocalFiles();
 			const localMap = new Map<string, TFile>();
-			for (const f of localFiles) {
-				localMap.set(f.path, f);
-			}
+			for (const f of localFiles) localMap.set(f.path, f);
 			const localFolderPaths = this.getLocalFolderPaths();
 
-			// 2. Gather remote files and folders
+			// 2. Gather remote state
+			this.progress("Listing remote...");
 			const allRemote = await this.provider.listAllFiles();
 			const remoteMap = new Map<string, RemoteFileInfo>();
 			const remoteFolderMap = new Map<string, RemoteFileInfo>();
 			for (const f of allRemote) {
-				if (f.isFolder) {
-					remoteFolderMap.set(f.path, f);
-				} else {
-					remoteMap.set(f.path, f);
-				}
+				if (f.isFolder) remoteFolderMap.set(f.path, f);
+				else remoteMap.set(f.path, f);
 			}
 
 			// 3. Compute actions
+			this.progress("Planning...");
 			const actions = this.computeActions(localMap, remoteMap);
 			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
 
-			// 4. Phase 1: folder creates (depth ascending — parents first)
+			// 4. Hash-check conflict actions to filter false positives
+			const conflictIssues: SyncIssue[] = [];
+			for (const action of actions) {
+				if (action.type !== "conflict") continue;
+				const file = localMap.get(action.vaultPath);
+				const remote = remoteMap.get(action.vaultPath);
+				if (!file || !remote) continue;
+				const localContent = await this.app.vault.readBinary(file);
+				const localHash = computeMD5(localContent);
+				if (localHash === remote.md5Checksum) {
+					// Identical content — auto-resolve silently
+					this.stateStore.setRecord(action.vaultPath, {
+						vaultPath: action.vaultPath,
+						remoteId: remote.id,
+						remoteFolderId: remote.parentId,
+						localModTime: file.stat.mtime,
+						remoteModTime: remote.modifiedTime,
+						contentHash: localHash,
+					});
+				} else {
+					conflictIssues.push({
+						vaultPath: action.vaultPath,
+						type: "conflict",
+						remoteId: remote.id,
+						localModTime: file.stat.mtime,
+						remoteModTime: remote.modifiedTime,
+					});
+				}
+			}
+
+			// 5. Show plan modal — user reviews and confirms before any writes
+			const nonConflictActions = actions.filter((a) => a.type !== "conflict");
+			const planModal = new SyncPlanModal(
+				this.app,
+				nonConflictActions,
+				conflictIssues,
+				this.settings.conflictStrategy === "smart-merge" ? "merge" : undefined,
+			);
+			const plan = await planModal.openAndWait();
+
+			if (plan.cancelled) {
+				return result;
+			}
+
+			// 6. Execute folder creates (parents first)
+			this.progress("Syncing...");
 			const issues: SyncIssue[] = [];
 			const folderCreates = folderActions
 				.filter(a => a.type === "create-folder-remote" || a.type === "create-folder-local")
@@ -102,9 +152,10 @@ export class SyncEngine {
 				}
 			}
 
-			// 5. Phase 2: file actions (non-conflict)
-			for (const action of actions) {
-				if (action.type === "conflict") continue;
+			// 7. Execute selected file actions
+			const total = plan.selectedActions.length;
+			let done = 0;
+			for (const action of plan.selectedActions) {
 				try {
 					await this.executeAction(action, localMap, remoteMap);
 					this.countAction(action, result);
@@ -119,9 +170,11 @@ export class SyncEngine {
 					});
 					result.errors++;
 				}
+				done++;
+				this.progress(`Syncing... ${done}/${total}`);
 			}
 
-			// 6. Phase 3: folder deletes (depth descending — children first)
+			// 8. Execute folder deletes (children first)
 			const folderDeletes = folderActions
 				.filter(a => a.type === "delete-folder-remote" || a.type === "delete-folder-local")
 				.sort((a, b) => b.vaultPath.split("/").length - a.vaultPath.split("/").length);
@@ -136,45 +189,24 @@ export class SyncEngine {
 				}
 			}
 
-			// 5. Collect conflicts (check hashes first to filter false conflicts)
-			for (const action of actions) {
-				if (action.type !== "conflict") continue;
-
-				const file = localMap.get(action.vaultPath);
-				const remote = remoteMap.get(action.vaultPath);
-				if (!file || !remote) continue;
-
-				const localContent = await this.app.vault.readBinary(file);
-				const localHash = computeMD5(localContent);
-
-				if (localHash === remote.md5Checksum) {
-					// Content identical — auto-resolve
-					this.stateStore.setRecord(action.vaultPath, {
-						vaultPath: action.vaultPath,
-						remoteId: remote.id,
-						remoteFolderId: remote.parentId,
-						localModTime: file.stat.mtime,
-						remoteModTime: remote.modifiedTime,
-						contentHash: localHash,
+			// 9. Apply conflict resolutions from plan modal
+			if (plan.conflictResolutions.size > 0) {
+				this.progress("Resolving conflicts...");
+				const resolutions: SyncIssueResolution[] = Array.from(plan.conflictResolutions.entries())
+					.map(([vaultPath, resolution]) => {
+						const issue = conflictIssues.find(c => c.vaultPath === vaultPath);
+						return { vaultPath, resolution, remoteId: issue?.remoteId };
 					});
-				} else {
-					issues.push({
-						vaultPath: action.vaultPath,
-						type: "conflict",
-						remoteId: remote.id,
-						localModTime: file.stat.mtime,
-						remoteModTime: remote.modifiedTime,
-					});
-				}
+				await this.applyResolutions(resolutions, localMap, remoteMap, result);
 			}
 
-			// 6. Show results modal if there are issues
+			// 10. Show results modal only for errors
 			if (issues.length > 0) {
 				const resolutions = await this.showResultsModal(issues);
 				await this.applyResolutions(resolutions, localMap, remoteMap, result);
 			}
 
-			// 7. Finalize
+			// 11. Finalize
 			this.stateStore.lastSyncTime = Date.now();
 			await this.stateStore.save();
 		} finally {
@@ -264,14 +296,14 @@ export class SyncEngine {
 					const localChanged = local.stat.mtime > record.localModTime;
 					const remoteChanged = remote.modifiedTime > record.remoteModTime;
 					if (localChanged && remoteChanged) {
-						actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+						this.pushConflictOrResolve(actions, path, local, remote);
 					} else if (localChanged) {
 						actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
 					} else if (remoteChanged) {
 						actions.push({ type: "update-local", vaultPath: path, remoteId: remote.id });
 					}
 				} else if (local && remote && !record) {
-					actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+					this.pushConflictOrResolve(actions, path, local, remote);
 				} else if (local && !remote && record) {
 					actions.push({ type: "delete-local", vaultPath: path });
 				} else if (local && !remote && !record) {
@@ -400,8 +432,8 @@ export class SyncEngine {
 						break;
 
 					case "merge":
-						if (res.remoteId && Platform.isDesktop) {
-							await this.mergeWithExternalTool(res.vaultPath, res.remoteId, localMap, remoteMap);
+						if (res.remoteId) {
+							await this.mergeFiles(res.vaultPath, res.remoteId, localMap, remoteMap);
 							result.conflicts++;
 						}
 						break;
@@ -421,7 +453,7 @@ export class SyncEngine {
 		}
 	}
 
-	private async mergeWithExternalTool(
+	private async mergeFiles(
 		vaultPath: string,
 		remoteId: string,
 		localMap: Map<string, TFile>,
@@ -433,61 +465,90 @@ export class SyncEngine {
 		const remoteContent = await this.provider.downloadFile(remoteId);
 		const remote = remoteMap.get(vaultPath)!;
 
-		// Write remote version to a temp file next to the local file
-		const tempPath = vaultPath.replace(/(\.[^.]+)$/, `.remote$1`);
-		const existing = this.app.vault.getAbstractFileByPath(tempPath);
-		if (existing instanceof TFile) {
-			await this.app.vault.modifyBinary(existing, remoteContent);
-		} else {
-			const parentPath = getParentPath(tempPath);
-			if (parentPath) {
-				await this.ensureLocalFolder(parentPath);
-			}
-			await this.app.vault.createBinary(tempPath, remoteContent);
+		const localText = await this.app.vault.read(file);
+		const remoteText = new TextDecoder().decode(remoteContent);
+
+		const { text: merged, conflicts } = merge2way(localText, remoteText);
+
+		if (conflicts === 0) {
+			// Clean auto-merge — write result, upload, update tracking
+			await this.app.vault.modify(file, merged);
+			const mergedBin = new TextEncoder().encode(merged);
+			const mimeType = guessMimeType(vaultPath);
+			await this.provider.updateFile(remoteId, mergedBin, mimeType);
+			const hash = computeMD5(mergedBin);
+			const updatedFile = this.app.vault.getAbstractFileByPath(vaultPath);
+			this.stateStore.setRecord(vaultPath, {
+				vaultPath,
+				remoteId,
+				remoteFolderId: remote.parentId,
+				localModTime: updatedFile instanceof TFile ? updatedFile.stat.mtime : Date.now(),
+				remoteModTime: Date.now(),
+				contentHash: hash,
+			});
+			new Notice(`Auto-merged: ${vaultPath}`);
+			return;
 		}
 
-		// Get absolute paths for external tool
-		const adapter = this.app.vault.adapter;
-		const localAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(vaultPath);
-		const remoteAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(tempPath);
+		// Conflicts remain — write markers into local file so user can see them
+		await this.app.vault.modify(file, merged);
 
-		if (localAbsPath && remoteAbsPath && this.settings.mergeToolCommand) {
-			const cmd = this.settings.mergeToolCommand
-				.replace("{local}", `"${localAbsPath}"`)
-				.replace("{remote}", `"${remoteAbsPath}"`);
+		// Launch external tool if configured (desktop only)
+		if (Platform.isDesktop && this.settings.mergeToolCommand) {
+			const tempPath = vaultPath.replace(/(\.[^.]+)$/, `.remote$1`);
+			const tempExisting = this.app.vault.getAbstractFileByPath(tempPath);
+			if (tempExisting instanceof TFile) {
+				await this.app.vault.modifyBinary(tempExisting, remoteContent);
+			} else {
+				const parentPath = getParentPath(tempPath);
+				if (parentPath) await this.ensureLocalFolder(parentPath);
+				await this.app.vault.createBinary(tempPath, remoteContent);
+			}
 
-			const { exec } = require("child_process") as typeof import("child_process");
-			await new Promise<void>((resolve, reject) => {
-				exec(cmd, (error: Error | null) => {
-					if (error) reject(error);
-					else resolve();
+			const adapter = this.app.vault.adapter;
+			const localAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(vaultPath);
+			const remoteAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(tempPath);
+
+			if (localAbsPath && remoteAbsPath) {
+				const cmd = this.settings.mergeToolCommand
+					.replace("{local}", `"${localAbsPath}"`)
+					.replace("{remote}", `"${remoteAbsPath}"`);
+				const { exec } = require("child_process") as typeof import("child_process");
+				await new Promise<void>((resolve, reject) => {
+					exec(cmd, (error: Error | null) => {
+						if (error) reject(error);
+						else resolve();
+					});
 				});
+			}
+
+			// After tool closes, upload whatever is in the local file
+			const mergedBin = await this.app.vault.readBinary(file);
+			const mimeType = guessMimeType(vaultPath);
+			await this.provider.updateFile(remoteId, mergedBin, mimeType);
+			const hash = computeMD5(mergedBin);
+			const updatedFile = this.app.vault.getAbstractFileByPath(vaultPath);
+			this.stateStore.setRecord(vaultPath, {
+				vaultPath,
+				remoteId,
+				remoteFolderId: remote.parentId,
+				localModTime: updatedFile instanceof TFile ? updatedFile.stat.mtime : Date.now(),
+				remoteModTime: Date.now(),
+				contentHash: hash,
 			});
+
+			const tempFile = this.app.vault.getAbstractFileByPath(tempPath);
+			if (tempFile instanceof TFile) await this.app.vault.delete(tempFile);
 		} else {
 			new Notice(
-				`Remote version saved as ${tempPath}. Merge manually, then delete the .remote file.`
+				`${conflicts} conflict${conflicts !== 1 ? "s" : ""} in ${vaultPath} — conflict markers added, resolve and sync again`
 			);
-		}
-
-		// After merge, upload the local version (user edited it) and update tracking
-		const mergedContent = await this.app.vault.readBinary(file);
-		const mimeType = guessMimeType(vaultPath);
-		await this.provider.updateFile(remoteId, mergedContent, mimeType);
-		const hash = computeMD5(mergedContent);
-
-		this.stateStore.setRecord(vaultPath, {
-			vaultPath,
-			remoteId,
-			remoteFolderId: remote.parentId,
-			localModTime: file.stat.mtime,
-			remoteModTime: Date.now(),
-			contentHash: hash,
-		});
-
-		// Clean up temp file
-		const tempFile = this.app.vault.getAbstractFileByPath(tempPath);
-		if (tempFile instanceof TFile) {
-			await this.app.vault.delete(tempFile);
+			// Update local mtime in tracking so next sync sees the file as locally changed
+			const record = this.stateStore.getRecord(vaultPath);
+			if (record) {
+				record.localModTime = file.stat.mtime;
+				this.stateStore.setRecord(vaultPath, record);
+			}
 		}
 	}
 
@@ -530,6 +591,35 @@ export class SyncEngine {
 				remoteMap
 			);
 			result.uploaded++;
+		}
+	}
+
+	private pushConflictOrResolve(
+		actions: SyncAction[],
+		path: string,
+		local: TFile,
+		remote: RemoteFileInfo,
+	): void {
+		switch (this.settings.conflictStrategy) {
+			case "smart-merge":
+				// Queued as conflict; mergeFiles() is invoked during conflict resolution
+				actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+				break;
+			case "latest-wins":
+				if (local.stat.mtime >= remote.modifiedTime) {
+					actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
+				} else {
+					actions.push({ type: "update-local", vaultPath: path, remoteId: remote.id });
+				}
+				break;
+			case "use-local":
+				actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
+				break;
+			case "use-remote":
+				actions.push({ type: "update-local", vaultPath: path, remoteId: remote.id });
+				break;
+			default:
+				actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
 		}
 	}
 
@@ -593,7 +683,7 @@ export class SyncEngine {
 				const remoteChanged = remote.modifiedTime > record.remoteModTime;
 
 				if (localChanged && remoteChanged) {
-					actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+					this.pushConflictOrResolve(actions, path, local, remote);
 				} else if (localChanged) {
 					actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
 				} else if (remoteChanged) {
@@ -605,7 +695,7 @@ export class SyncEngine {
 				} else if (this.firstSyncStrategy === "upload") {
 					actions.push({ type: "update-remote", vaultPath: path, remoteId: remote.id });
 				} else {
-					actions.push({ type: "conflict", vaultPath: path, remoteId: remote.id });
+					this.pushConflictOrResolve(actions, path, local, remote);
 				}
 			} else if (local && !remote && record) {
 				actions.push({ type: "delete-local", vaultPath: path });
