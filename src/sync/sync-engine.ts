@@ -1,7 +1,7 @@
 import { App, Notice, Platform, TFile, TFolder } from "obsidian";
 import type { CloudProvider } from "../providers/cloud-provider";
 import type { SyncStateStore } from "./sync-state";
-import type { ConflictResolution, PluginSettings, RemoteFileInfo, SyncAction } from "../types";
+import type { PluginSettings, RemoteFileInfo, SyncAction } from "../types";
 import { FirstSyncModal, type FirstSyncStrategy } from "./first-sync-modal";
 import { SyncResultsModal, type SyncIssue, type SyncIssueResolution } from "./sync-results-modal";
 import { SyncPlanModal } from "./sync-plan-modal";

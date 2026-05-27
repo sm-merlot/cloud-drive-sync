@@ -8,7 +8,7 @@ function lcsTable(a: string[], b: string[]): number[][] {
 	const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
 	for (let i = 1; i <= m; i++) {
 		for (let j = 1; j <= n; j++) {
-			dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+			dp[i]![j] = a[i - 1] === b[j - 1] ? dp[i - 1]![j - 1]! + 1 : Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
 		}
 	}
 	return dp;
@@ -22,7 +22,7 @@ function lcsIndices(a: string[], b: string[]): Array<[number, number]> {
 		if (a[i - 1] === b[j - 1]) {
 			matches.unshift([i - 1, j - 1]);
 			i--; j--;
-		} else if (dp[i - 1][j] >= dp[i][j - 1]) {
+		} else if (dp[i - 1]![j]! >= dp[i]![j - 1]!) {
 			i--;
 		} else {
 			j--;
@@ -71,7 +71,7 @@ export function merge2way(local: string, remote: string): MergeResult {
 		}
 
 		if (lm < localLines.length) {
-			out.push(localLines[lm]);
+			out.push(localLines[lm]!);
 		}
 		li = lm + 1;
 		ri = rm + 1;

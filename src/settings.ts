@@ -1,4 +1,4 @@
-import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
+import { App, ButtonComponent, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import type CloudSyncPlugin from "./main";
 import { GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
 import { S3Provider } from "./providers/s3/s3-provider";
@@ -140,6 +140,12 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 
 		const s3 = this.plugin.settings.s3;
 
+		let testBtn: ButtonComponent;
+		const updateTestBtn = () => {
+			const s = this.plugin.settings.s3;
+			testBtn?.setDisabled(!(s.endpoint && s.bucket && s.accessKey && s.secretKey));
+		};
+
 		new Setting(containerEl)
 			.setName("Endpoint")
 			.setDesc("Base URL of your rclone serve s3 instance, e.g. https://scott-notes.merlot.family")
@@ -150,6 +156,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.s3.endpoint = value.replace(/\/$/, "");
 						await this.plugin.saveSettings();
+						updateTestBtn();
 					})
 			);
 
@@ -163,6 +170,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.s3.bucket = value;
 						await this.plugin.saveSettings();
+						updateTestBtn();
 					})
 			);
 
@@ -175,6 +183,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.s3.accessKey = value;
 						await this.plugin.saveSettings();
+						updateTestBtn();
 					})
 			);
 
@@ -187,6 +196,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.s3.secretKey = value;
 						await this.plugin.saveSettings();
+						updateTestBtn();
 					});
 				text.inputEl.type = "password";
 			});
@@ -204,13 +214,13 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 					})
 			);
 
-		const isConfigured = s3.endpoint && s3.bucket && s3.accessKey && s3.secretKey;
 		new Setting(containerEl)
 			.setName("Test connection")
-			.addButton((btn) =>
-				btn
+			.addButton((btn) => {
+				testBtn = btn;
+				return btn
 					.setButtonText("Test")
-					.setDisabled(!isConfigured)
+					.setDisabled(!(s3.endpoint && s3.bucket && s3.accessKey && s3.secretKey))
 					.onClick(async () => {
 						btn.setButtonText("Testing...").setDisabled(true);
 						try {
@@ -229,7 +239,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 							btn.setButtonText("Test").setDisabled(false);
 						}
 					})
-			);
+				});
 	}
 
 	private displayGoogleDriveSettings(containerEl: HTMLElement): void {
