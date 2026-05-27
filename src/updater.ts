@@ -1,39 +1,21 @@
 import { App, Notice } from "obsidian";
 import { computeMD5 } from "./util/hash";
-import type { GoogleDriveApi } from "./providers/google-drive/google-drive-api";
-import type { RemoteFileInfo } from "./types";
+import type { CloudProvider } from "./providers/cloud-provider";
 
-const UPDATE_FOLDER_NAME = ".cloud-drive-sync";
+const UPDATE_FOLDER = ".cloud-drive-sync";
 const PLUGIN_FILES = ["main.js", "manifest.json", "styles.css"];
 
 export class PluginUpdater {
-	private app: App;
-	private pluginId: string;
-	private api: GoogleDriveApi;
-	private rootFolderId: string;
-
-	constructor(app: App, pluginId: string, api: GoogleDriveApi, rootFolderId: string) {
-		this.app = app;
-		this.pluginId = pluginId;
-		this.api = api;
-		this.rootFolderId = rootFolderId;
-	}
-
-	private async findUpdateFolder(): Promise<string | null> {
-		const folders = await this.api.listFolders(this.rootFolderId);
-		const folder = folders.find((f) => f.name === UPDATE_FOLDER_NAME);
-		return folder?.id ?? null;
-	}
-
-	private async getRemoteFiles(folderId: string): Promise<RemoteFileInfo[]> {
-		const files = await this.api.listAllFilesRecursive(folderId);
-		return files.filter((f) => PLUGIN_FILES.includes(f.name));
-	}
+	constructor(
+		private app: App,
+		private pluginId: string,
+		private provider: CloudProvider,
+	) {}
 
 	private async getInstalledHash(fileName: string): Promise<string | null> {
-		const pluginDir = this.app.vault.configDir + `/plugins/${this.pluginId}`;
+		const path = `${this.app.vault.configDir}/plugins/${this.pluginId}/${fileName}`;
 		try {
-			const content = await this.app.vault.adapter.readBinary(`${pluginDir}/${fileName}`);
+			const content = await this.app.vault.adapter.readBinary(path);
 			return computeMD5(content);
 		} catch {
 			return null;
@@ -41,66 +23,50 @@ export class PluginUpdater {
 	}
 
 	async checkForUpdate(): Promise<boolean> {
-		const folderId = await this.findUpdateFolder();
-		if (!folderId) return false;
+		const all = await this.provider.listAllFiles();
+		const updateFiles = all.filter(
+			(f) => !f.isFolder && f.path.startsWith(`${UPDATE_FOLDER}/`) && PLUGIN_FILES.includes(f.name)
+		);
+		if (updateFiles.length === 0) return false;
 
-		const remoteFiles = await this.getRemoteFiles(folderId);
-		if (remoteFiles.length === 0) return false;
-
-		for (const remote of remoteFiles) {
+		for (const remote of updateFiles) {
 			const localHash = await this.getInstalledHash(remote.name);
-			if (!localHash || localHash !== remote.md5Checksum) {
-				return true;
-			}
+			if (!localHash || localHash !== remote.md5Checksum) return true;
 		}
-
 		return false;
-	}
-
-	async applyUpdate(): Promise<boolean> {
-		const folderId = await this.findUpdateFolder();
-		if (!folderId) return false;
-
-		const remoteFiles = await this.getRemoteFiles(folderId);
-		if (remoteFiles.length === 0) return false;
-
-		const pluginDir = this.app.vault.configDir + `/plugins/${this.pluginId}`;
-		let updated = false;
-
-		for (const remote of remoteFiles) {
-			const content = await this.api.downloadFile(remote.id);
-			await this.app.vault.adapter.writeBinary(`${pluginDir}/${remote.name}`, content);
-			updated = true;
-		}
-
-		return updated;
 	}
 
 	async checkAndPrompt(): Promise<void> {
 		try {
-			const hasUpdate = await this.checkForUpdate();
-			if (!hasUpdate) return;
-
-			new Notice(
-				"Cloud Drive Sync: plugin update found. Updating and reloading...",
-				5000
+			const all = await this.provider.listAllFiles();
+			const updateFiles = all.filter(
+				(f) => !f.isFolder && f.path.startsWith(`${UPDATE_FOLDER}/`) && PLUGIN_FILES.includes(f.name)
 			);
+			if (updateFiles.length === 0) return;
 
-			const applied = await this.applyUpdate();
-			if (!applied) return;
+			let needsUpdate = false;
+			for (const remote of updateFiles) {
+				const localHash = await this.getInstalledHash(remote.name);
+				if (!localHash || localHash !== remote.md5Checksum) { needsUpdate = true; break; }
+			}
+			if (!needsUpdate) return;
 
-			// Reload the plugin
-			// @ts-expect-error — Obsidian internal API for reloading plugins
+			new Notice("Cloud Sync: plugin update found. Updating and reloading...", 5000);
+
+			const pluginDir = `${this.app.vault.configDir}/plugins/${this.pluginId}`;
+			for (const remote of updateFiles) {
+				const content = await this.provider.downloadFile(remote.id);
+				await this.app.vault.adapter.writeBinary(`${pluginDir}/${remote.name}`, content);
+			}
+
+			// @ts-expect-error — Obsidian internal API
 			const plugins = this.app.plugins;
 			if (plugins?.disablePlugin && plugins?.enablePlugin) {
 				await plugins.disablePlugin(this.pluginId);
 				await plugins.enablePlugin(this.pluginId);
-				new Notice("Cloud Drive Sync: updated and reloaded!");
+				new Notice("Cloud Sync: updated and reloaded!");
 			} else {
-				new Notice(
-					"Cloud Drive Sync: updated! Restart Obsidian to apply.",
-					10000
-				);
+				new Notice("Cloud Sync: updated! Restart Obsidian to apply.", 10000);
 			}
 		} catch (e) {
 			console.error("Plugin self-update failed:", e);

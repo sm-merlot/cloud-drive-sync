@@ -39,6 +39,8 @@ export class SyncEngine {
 		this.settings = settings;
 	}
 
+	getProvider(): CloudProvider { return this.provider; }
+
 	private progress(message: string): void {
 		this.onProgress?.(message);
 	}

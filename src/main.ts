@@ -308,20 +308,10 @@ export default class CloudSyncPlugin extends Plugin {
 	}
 
 	private async checkForPluginUpdate(): Promise<void> {
-		const gd = this.settings.googleDrive;
-		if (!gd.refreshToken || !gd.clientId || !gd.clientSecret || !gd.rootFolderId) return;
-
-		const auth = new GoogleDriveAuth(gd, (updates) => {
-			Object.assign(this.settings.googleDrive, updates);
-			this.saveSettings();
-		});
-		const api = new GoogleDriveApi(() => auth.ensureValidToken());
-		const updater = new PluginUpdater(this.app, this.manifest.id, api, gd.rootFolderId);
-
-		const hasUpdate = await updater.checkForUpdate();
-		if (hasUpdate) {
-			await updater.checkAndPrompt();
-		}
+		const provider = this.getSyncEngine()?.getProvider();
+		if (!provider) return;
+		const updater = new PluginUpdater(this.app, this.manifest.id, provider);
+		await updater.checkAndPrompt();
 	}
 
 	private updateStatusBar(state: "idle" | "syncing" | "error", stageMsg?: string): void {
