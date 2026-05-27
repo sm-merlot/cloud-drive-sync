@@ -74,7 +74,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	},
 };
 
-export type ConflictResolution = "local" | "remote" | "merge" | "skip";
+export type ConflictResolution = "local" | "remote" | "merge" | "external" | "skip";
 
 export type SyncAction =
 	| { type: "upload"; vaultPath: string }

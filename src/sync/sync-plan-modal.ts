@@ -1,4 +1,4 @@
-import { App, Modal, Setting, setIcon } from "obsidian";
+import { App, Modal, Platform, Setting, setIcon } from "obsidian";
 import type { ConflictResolution, SyncAction } from "../types";
 import type { SyncIssue } from "./sync-results-modal";
 
@@ -31,6 +31,7 @@ export class SyncPlanModal extends Modal {
 		private fileActions: SyncAction[],
 		private conflicts: SyncIssue[],
 		defaultConflictResolution: ConflictResolution = "skip",
+		private hasMergeTool = false,
 	) {
 		super(app);
 		this.selected = new Set(fileActions.map((a) => a.vaultPath));
@@ -178,7 +179,10 @@ export class SyncPlanModal extends Modal {
 		// Bulk resolvers
 		const bulkRow = section.createEl("div", { cls: "cloud-sync-plan-bulk-row" });
 		bulkRow.createEl("span", { text: "Resolve all: ", cls: "cloud-sync-plan-bulk-label" });
-		for (const res of ["local", "remote", "skip"] as ConflictResolution[]) {
+		const bulkOptions: ConflictResolution[] = ["local", "remote", "merge"];
+		if (Platform.isDesktop && this.hasMergeTool) bulkOptions.push("external");
+		bulkOptions.push("skip");
+		for (const res of bulkOptions) {
 			const btn = bulkRow.createEl("button", {
 				text: res.charAt(0).toUpperCase() + res.slice(1),
 				cls: "cloud-sync-plan-bulk-btn",
@@ -209,8 +213,9 @@ export class SyncPlanModal extends Modal {
 			const options: Array<[ConflictResolution, string]> = [
 				["local", "Local"],
 				["remote", "Remote"],
+				["merge", "Smart Merge"],
 			];
-			options.push(["merge", "Smart Merge"]);
+			if (Platform.isDesktop && this.hasMergeTool) options.push(["external", "External"]);
 			options.push(["skip", "Skip"]);
 
 			for (const [res, label] of options) {

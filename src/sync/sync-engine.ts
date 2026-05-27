@@ -155,7 +155,13 @@ export class SyncEngine {
 
 			// 5. Show plan modal — user reviews and confirms before any writes
 			const nonConflictActions = actions.filter((a) => a.type !== "conflict");
-			const planModal = new SyncPlanModal(this.app, nonConflictActions, conflictIssues);
+			const planModal = new SyncPlanModal(
+				this.app,
+				nonConflictActions,
+				conflictIssues,
+				"skip",
+				Platform.isDesktop && !!this.settings.mergeToolCommand,
+			);
 			const plan = await planModal.openAndWait();
 
 			if (plan.cancelled) {
@@ -465,6 +471,13 @@ export class SyncEngine {
 						}
 						break;
 
+					case "external":
+						if (res.remoteId && Platform.isDesktop) {
+							await this.launchExternalMerge(res.vaultPath, res.remoteId, localMap, remoteMap);
+							result.conflicts++;
+						}
+						break;
+
 					case "retry":
 						// Re-attempt: figure out what action to take
 						await this.retryFile(res.vaultPath, localMap, remoteMap, result);
@@ -491,23 +504,18 @@ export class SyncEngine {
 
 		const remoteContent = await this.provider.downloadFile(remoteId);
 		const remote = remoteMap.get(vaultPath)!;
-
 		const localText = await this.app.vault.read(file);
 		const remoteText = new TextDecoder().decode(remoteContent);
-
 		const { text: merged, conflicts } = merge2way(localText, remoteText);
 
 		if (conflicts === 0) {
-			// Clean auto-merge — write result, upload, update tracking
 			await this.app.vault.modify(file, merged);
 			const mergedBin = new TextEncoder().encode(merged);
-			const mimeType = guessMimeType(vaultPath);
-			await this.provider.updateFile(remoteId, mergedBin, mimeType);
+			await this.provider.updateFile(remoteId, mergedBin, guessMimeType(vaultPath));
 			const hash = computeMD5(mergedBin);
 			const updatedFile = this.app.vault.getAbstractFileByPath(vaultPath);
 			this.stateStore.setRecord(vaultPath, {
-				vaultPath,
-				remoteId,
+				vaultPath, remoteId,
 				remoteFolderId: remote.parentId,
 				localModTime: updatedFile instanceof TFile ? updatedFile.stat.mtime : Date.now(),
 				remoteModTime: Date.now(),
@@ -517,66 +525,76 @@ export class SyncEngine {
 			return;
 		}
 
-		// Conflicts remain — write markers into local file so user can see them
+		// Conflicts remain — write markers, then try external tool or leave for user
 		await this.app.vault.modify(file, merged);
-
-		// Launch external tool if configured (desktop only)
 		if (Platform.isDesktop && this.settings.mergeToolCommand) {
-			const tempPath = vaultPath.replace(/(\.[^.]+)$/, `.remote$1`);
-			const tempExisting = this.app.vault.getAbstractFileByPath(tempPath);
-			if (tempExisting instanceof TFile) {
-				await this.app.vault.modifyBinary(tempExisting, remoteContent);
-			} else {
-				const parentPath = getParentPath(tempPath);
-				if (parentPath) await this.ensureLocalFolder(parentPath);
-				await this.app.vault.createBinary(tempPath, remoteContent);
-			}
-
-			const adapter = this.app.vault.adapter;
-			const localAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(vaultPath);
-			const remoteAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(tempPath);
-
-			if (localAbsPath && remoteAbsPath) {
-				const cmd = this.settings.mergeToolCommand
-					.replace("{local}", `"${localAbsPath}"`)
-					.replace("{remote}", `"${remoteAbsPath}"`);
-				const { exec } = require("child_process") as typeof import("child_process");
-				await new Promise<void>((resolve, reject) => {
-					exec(cmd, (error: Error | null) => {
-						if (error) reject(error);
-						else resolve();
-					});
-				});
-			}
-
-			// After tool closes, upload whatever is in the local file
-			const mergedBin = await this.app.vault.readBinary(file);
-			const mimeType = guessMimeType(vaultPath);
-			await this.provider.updateFile(remoteId, mergedBin, mimeType);
-			const hash = computeMD5(mergedBin);
-			const updatedFile = this.app.vault.getAbstractFileByPath(vaultPath);
-			this.stateStore.setRecord(vaultPath, {
-				vaultPath,
-				remoteId,
-				remoteFolderId: remote.parentId,
-				localModTime: updatedFile instanceof TFile ? updatedFile.stat.mtime : Date.now(),
-				remoteModTime: Date.now(),
-				contentHash: hash,
-			});
-
-			const tempFile = this.app.vault.getAbstractFileByPath(tempPath);
-			if (tempFile instanceof TFile) await this.app.vault.delete(tempFile);
+			await this.launchExternalMerge(vaultPath, remoteId, localMap, remoteMap, remoteContent);
 		} else {
 			new Notice(
 				`${conflicts} conflict${conflicts !== 1 ? "s" : ""} in ${vaultPath} — conflict markers added, resolve and sync again`
 			);
-			// Update local mtime in tracking so next sync sees the file as locally changed
 			const record = this.stateStore.getRecord(vaultPath);
 			if (record) {
 				record.localModTime = file.stat.mtime;
 				this.stateStore.setRecord(vaultPath, record);
 			}
 		}
+	}
+
+	private async launchExternalMerge(
+		vaultPath: string,
+		remoteId: string,
+		localMap: Map<string, TFile>,
+		remoteMap: Map<string, RemoteFileInfo>,
+		remoteContent?: ArrayBuffer,
+	): Promise<void> {
+		const file = localMap.get(vaultPath);
+		if (!file) return;
+		const remote = remoteMap.get(vaultPath)!;
+
+		const content = remoteContent ?? await this.provider.downloadFile(remoteId);
+
+		const tempPath = vaultPath.replace(/(\.[^.]+)$/, `.remote$1`);
+		const tempExisting = this.app.vault.getAbstractFileByPath(tempPath);
+		if (tempExisting instanceof TFile) {
+			await this.app.vault.modifyBinary(tempExisting, content);
+		} else {
+			const parentPath = getParentPath(tempPath);
+			if (parentPath) await this.ensureLocalFolder(parentPath);
+			await this.app.vault.createBinary(tempPath, content);
+		}
+
+		const adapter = this.app.vault.adapter;
+		const localAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(vaultPath);
+		const remoteAbsPath = (adapter as { getFullPath?: (p: string) => string }).getFullPath?.(tempPath);
+
+		if (localAbsPath && remoteAbsPath && this.settings.mergeToolCommand) {
+			const cmd = this.settings.mergeToolCommand
+				.replace("{local}", `"${localAbsPath}"`)
+				.replace("{remote}", `"${remoteAbsPath}"`);
+			const { exec } = require("child_process") as typeof import("child_process");
+			await new Promise<void>((resolve, reject) => {
+				exec(cmd, (error: Error | null) => {
+					if (error) reject(error);
+					else resolve();
+				});
+			});
+		}
+
+		const mergedBin = await this.app.vault.readBinary(file);
+		await this.provider.updateFile(remoteId, mergedBin, guessMimeType(vaultPath));
+		const hash = computeMD5(mergedBin);
+		const updatedFile = this.app.vault.getAbstractFileByPath(vaultPath);
+		this.stateStore.setRecord(vaultPath, {
+			vaultPath, remoteId,
+			remoteFolderId: remote.parentId,
+			localModTime: updatedFile instanceof TFile ? updatedFile.stat.mtime : Date.now(),
+			remoteModTime: Date.now(),
+			contentHash: hash,
+		});
+
+		const tempFile = this.app.vault.getAbstractFileByPath(tempPath);
+		if (tempFile instanceof TFile) await this.app.vault.delete(tempFile);
 	}
 
 	private async retryFile(
