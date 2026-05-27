@@ -91,7 +91,7 @@ export class SyncEngine {
 			const actions = this.computeActions(localMap, remoteMap);
 			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
 
-			// 4. Hash-check conflict actions to filter false positives
+			// 4. Hash-check conflict actions; auto-smart-merge clean cases immediately
 			const conflictIssues: SyncIssue[] = [];
 			for (const action of actions) {
 				if (action.type !== "conflict") continue;
@@ -110,6 +110,38 @@ export class SyncEngine {
 						remoteModTime: remote.modifiedTime,
 						contentHash: localHash,
 					});
+				} else if (this.settings.conflictStrategy === "smart-merge") {
+					// Attempt LCS merge before showing any modal
+					const remoteContent = await this.provider.downloadFile(remote.id);
+					const localText = new TextDecoder().decode(localContent);
+					const remoteText = new TextDecoder().decode(remoteContent);
+					const { text: merged, conflicts } = merge2way(localText, remoteText);
+					if (conflicts === 0) {
+						// Clean — apply now, never surface to user
+						await this.app.vault.modify(file, merged);
+						const mergedBin = new TextEncoder().encode(merged);
+						await this.provider.updateFile(remote.id, mergedBin, guessMimeType(action.vaultPath));
+						const hash = computeMD5(mergedBin);
+						const updatedFile = this.app.vault.getAbstractFileByPath(action.vaultPath);
+						this.stateStore.setRecord(action.vaultPath, {
+							vaultPath: action.vaultPath,
+							remoteId: remote.id,
+							remoteFolderId: remote.parentId,
+							localModTime: updatedFile instanceof TFile ? updatedFile.stat.mtime : Date.now(),
+							remoteModTime: Date.now(),
+							contentHash: hash,
+						});
+						result.conflicts++;
+					} else {
+						// Real conflict — let user resolve manually in plan modal
+						conflictIssues.push({
+							vaultPath: action.vaultPath,
+							type: "conflict",
+							remoteId: remote.id,
+							localModTime: file.stat.mtime,
+							remoteModTime: remote.modifiedTime,
+						});
+					}
 				} else {
 					conflictIssues.push({
 						vaultPath: action.vaultPath,
@@ -123,12 +155,7 @@ export class SyncEngine {
 
 			// 5. Show plan modal — user reviews and confirms before any writes
 			const nonConflictActions = actions.filter((a) => a.type !== "conflict");
-			const planModal = new SyncPlanModal(
-				this.app,
-				nonConflictActions,
-				conflictIssues,
-				this.settings.conflictStrategy === "smart-merge" ? "merge" : undefined,
-			);
+			const planModal = new SyncPlanModal(this.app, nonConflictActions, conflictIssues);
 			const plan = await planModal.openAndWait();
 
 			if (plan.cancelled) {
