@@ -26,8 +26,11 @@ export class S3Provider implements CloudProvider {
 			const name = lastSlash >= 0 ? key.slice(lastSlash + 1) : key;
 			const parentPath = lastSlash >= 0 ? key.slice(0, lastSlash) : "";
 
-			// Synthesize folder entries for each ancestor path
+			// Always synthesize folders (including from .keep placeholders)
 			this.addSyntheticFolders(key, seenFolders, files);
+
+			// Skip .keep placeholders — they exist only to anchor empty folders in S3
+			if (name === ".keep") continue;
 
 			files.push({
 				id: key,
@@ -92,9 +95,11 @@ export class S3Provider implements CloudProvider {
 		await this.api.deleteObject(remoteId);
 	}
 
-	// S3 has no real folders — return computed path as the "ID"
+	// Upload a .keep placeholder so the folder has a real S3 presence
 	async createFolder(parentFolderId: string, name: string): Promise<string> {
-		return parentFolderId ? `${parentFolderId}/${name}` : name;
+		const folderPath = parentFolderId ? `${parentFolderId}/${name}` : name;
+		await this.api.putObject(`${folderPath}/.keep`, new ArrayBuffer(0), "application/octet-stream");
+		return folderPath;
 	}
 
 	async getRemoteFolderId(relativePath: string): Promise<string> {

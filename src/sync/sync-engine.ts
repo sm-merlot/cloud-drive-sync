@@ -810,11 +810,13 @@ export class SyncEngine {
 	private async executeFolderAction(action: SyncAction): Promise<void> {
 		switch (action.type) {
 			case "create-folder-remote": {
-				const folderId = await this.provider.getRemoteFolderId(action.vaultPath);
+				const parentPath = getParentPath(action.vaultPath);
+				const folderName = getFileName(action.vaultPath);
+				const folderId = await this.provider.createFolder(parentPath, folderName);
 				this.stateStore.setRecord(action.vaultPath, {
 					vaultPath: action.vaultPath,
 					remoteId: folderId,
-					remoteFolderId: "",
+					remoteFolderId: parentPath,
 					localModTime: Date.now(),
 					remoteModTime: Date.now(),
 					contentHash: FOLDER_SENTINEL,
