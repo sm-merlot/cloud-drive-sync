@@ -1,5 +1,8 @@
+import { requestUrl } from "obsidian";
+
+// Node https available on desktop (Electron) but not mobile
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const nodeHttps = require("https") as typeof import("https");
+const nodeHttps = (typeof require !== "undefined" ? require("https") : undefined) as typeof import("https") | undefined;
 
 export interface S3Config {
 	endpoint: string;
@@ -97,44 +100,61 @@ interface NodeResponse {
 	arrayBuffer: ArrayBuffer;
 }
 
-function nodeRequest(
+async function nodeRequest(
 	url: string,
 	method: string,
 	headers: Record<string, string>,
 	body?: Uint8Array,
 ): Promise<NodeResponse> {
-	return new Promise((resolve, reject) => {
-		const parsed = new URL(url);
-		const options: import("https").RequestOptions = {
-			hostname: parsed.hostname,
-			port: parsed.port || 443,
-			path: parsed.pathname + parsed.search,
-			method,
-			headers: {
-				...headers,
-				...(body && body.length > 0 ? { "content-length": String(body.length) } : {}),
-			},
-		};
+	// Desktop: use Node https to bypass Electron/Chromium ECH+QUIC issues
+	if (nodeHttps) {
+		return new Promise((resolve, reject) => {
+			const parsed = new URL(url);
+			const options: import("https").RequestOptions = {
+				hostname: parsed.hostname,
+				port: parsed.port || 443,
+				path: parsed.pathname + parsed.search,
+				method,
+				headers: {
+					...headers,
+					...(body && body.length > 0 ? { "content-length": String(body.length) } : {}),
+				},
+			};
 
-		const req = nodeHttps.request(options, (res) => {
-			const chunks: Buffer[] = [];
-			res.on("data", (chunk: Buffer) => chunks.push(chunk));
-			res.on("end", () => {
-				const buf = Buffer.concat(chunks);
-				const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-				resolve({
-					status: res.statusCode ?? 0,
-					text: buf.toString("utf-8"),
-					arrayBuffer,
+			const req = nodeHttps.request(options, (res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (chunk: Buffer) => chunks.push(chunk));
+				res.on("end", () => {
+					const buf = Buffer.concat(chunks);
+					const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+					resolve({
+						status: res.statusCode ?? 0,
+						text: buf.toString("utf-8"),
+						arrayBuffer,
+					});
 				});
+				res.on("error", reject);
 			});
-			res.on("error", reject);
-		});
 
-		req.on("error", reject);
-		if (body && body.length > 0) req.write(body);
-		req.end();
+			req.on("error", reject);
+			if (body && body.length > 0) req.write(body);
+			req.end();
+		});
+	}
+
+	// Mobile: use Obsidian's requestUrl (native HTTP stack, no ECH/QUIC issues)
+	const resp = await requestUrl({
+		url,
+		method,
+		headers,
+		body: body && body.length > 0 ? body.buffer : undefined,
+		throw: false,
 	});
+	return {
+		status: resp.status,
+		text: resp.text,
+		arrayBuffer: resp.arrayBuffer,
+	};
 }
 
 // ---------- S3 API class ----------
