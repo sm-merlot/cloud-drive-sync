@@ -4,7 +4,6 @@ import type { SyncStateStore } from "./sync-state";
 import type { PluginSettings, RemoteFileInfo, SyncAction } from "../types";
 import { FirstSyncModal, type FirstSyncStrategy } from "./first-sync-modal";
 import { SyncResultsModal, type SyncIssue, type SyncIssueResolution } from "./sync-results-modal";
-import { SyncPlanModal } from "./sync-plan-modal";
 import { computeMD5 } from "../util/hash";
 import { getFileName, getParentPath, guessMimeType, isDotPath, shouldExclude } from "../util/path";
 import { merge2way } from "../util/merge";
@@ -153,24 +152,10 @@ export class SyncEngine {
 				}
 			}
 
-			// 5. Show plan modal — user reviews and confirms before any writes
-			const nonConflictActions = actions.filter((a) => a.type !== "conflict");
-			const planModal = new SyncPlanModal(
-				this.app,
-				nonConflictActions,
-				conflictIssues,
-				"skip",
-				Platform.isDesktop && !!this.settings.mergeToolCommand,
-			);
-			const plan = await planModal.openAndWait();
-
-			if (plan.cancelled) {
-				return result;
-			}
-
-			// 6. Execute folder creates (parents first)
+			// 5. Execute folder creates (parents first)
 			this.progress("Syncing...");
 			const issues: SyncIssue[] = [];
+			const nonConflictActions = actions.filter((a) => a.type !== "conflict");
 			const folderCreates = folderActions
 				.filter(a => a.type === "create-folder-remote" || a.type === "create-folder-local")
 				.sort((a, b) => a.vaultPath.split("/").length - b.vaultPath.split("/").length);
@@ -185,10 +170,8 @@ export class SyncEngine {
 				}
 			}
 
-			// 7. Execute selected file actions
-			const total = plan.selectedActions.length;
-			let done = 0;
-			for (const action of plan.selectedActions) {
+			// 6. Execute file actions
+			for (const action of nonConflictActions) {
 				try {
 					await this.executeAction(action, localMap, remoteMap);
 					this.countAction(action, result);
@@ -203,11 +186,9 @@ export class SyncEngine {
 					});
 					result.errors++;
 				}
-				done++;
-				this.progress(`Syncing... ${done}/${total}`);
 			}
 
-			// 8. Execute folder deletes (children first)
+			// 7. Execute folder deletes (children first)
 			const folderDeletes = folderActions
 				.filter(a => a.type === "delete-folder-remote" || a.type === "delete-folder-local")
 				.sort((a, b) => b.vaultPath.split("/").length - a.vaultPath.split("/").length);
@@ -222,20 +203,10 @@ export class SyncEngine {
 				}
 			}
 
-			// 9. Apply conflict resolutions from plan modal
-			if (plan.conflictResolutions.size > 0) {
-				this.progress("Resolving conflicts...");
-				const resolutions: SyncIssueResolution[] = Array.from(plan.conflictResolutions.entries())
-					.map(([vaultPath, resolution]) => {
-						const issue = conflictIssues.find(c => c.vaultPath === vaultPath);
-						return { vaultPath, resolution, remoteId: issue?.remoteId };
-					});
-				await this.applyResolutions(resolutions, localMap, remoteMap, result);
-			}
-
-			// 10. Show results modal only for errors
-			if (issues.length > 0) {
-				const resolutions = await this.showResultsModal(issues);
+			// 8. Show results modal only when there are conflicts or errors
+			const allIssues = [...conflictIssues, ...issues];
+			if (allIssues.length > 0) {
+				const resolutions = await this.showResultsModal(allIssues);
 				await this.applyResolutions(resolutions, localMap, remoteMap, result);
 			}
 

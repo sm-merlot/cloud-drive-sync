@@ -258,9 +258,9 @@ export default class CloudSyncPlugin extends Plugin {
 		const engine = this.getSyncEngine();
 		if (!engine) return;
 
-		engine.onProgress = (msg) => {
+		engine.onProgress = () => {
 			this.currentStage = "syncing";
-			this.updateStatusBar("syncing", msg);
+			this.updateStatusBar("syncing");
 		};
 
 		this.currentStage = "syncing";
