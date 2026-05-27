@@ -1,0 +1,35 @@
+src/util/merge.ts
+  s_dce9f384c48bfa::t_cfaa9232e9fa8f 25
+  s_dce9f384c48bfa::t_b4e2f40a0f22f1 11
+  s_dce9f384c48bfa::t_c2cfc91cb18e11 74
+src/settings.ts
+  s_e1528cd6275ea0::t_a81fcb46ca7975 143-148,159,173,186,199,219-221,223
+  s_e1528cd6275ea0::t_dafdca69f49912 242
+  s_e1528cd6275ea0::t_2f45d5c45a43ef 1
+src/sync/sync-engine.ts
+  s_dce9f384c48bfa::t_f553ca3c9f265b 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "bdcba9c90084ac5266ca74657c8f84561d97c45c",
+  "prompts": {},
+  "sessions": {
+    "s_dce9f384c48bfa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b9a7660-94ce-4f82-995f-ba5adc9fbc2a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "scme0 <scott.merchant@octopus.com>"
+    },
+    "s_e1528cd6275ea0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c4b9bb9a-6ddf-4129-b19c-27a9012775c4",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "scme0 <scott.merchant@octopus.com>"
+    }
+  }
+}
