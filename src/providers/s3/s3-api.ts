@@ -1,4 +1,5 @@
-import { requestUrl } from "obsidian";
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const nodeHttps = require("https") as typeof import("https");
 
 export interface S3Config {
 	endpoint: string;
@@ -43,7 +44,6 @@ async function signingKey(secret: string, date: string, region: string): Promise
 	return hmac(k3, "aws4_request");
 }
 
-// Encode each path segment, preserve forward slashes
 function encodePath(path: string): string {
 	return path.split("/").map((s) => encodeURIComponent(s)).join("/");
 }
@@ -85,8 +85,56 @@ async function buildAuthHeaders(
 	return {
 		"x-amz-content-sha256": payloadHash,
 		"x-amz-date": datetime,
-		authorization: `AWS4-HMAC-SHA256 Credential=${accessKey}/${scope}, SignedHeaders=${signedHeaders}, Signature=${sig}`,
+		"authorization": `AWS4-HMAC-SHA256 Credential=${accessKey}/${scope}, SignedHeaders=${signedHeaders}, Signature=${sig}`,
 	};
+}
+
+// ---------- Node https wrapper — bypasses Electron/Chromium ECH+QUIC ----------
+
+interface NodeResponse {
+	status: number;
+	text: string;
+	arrayBuffer: ArrayBuffer;
+}
+
+function nodeRequest(
+	url: string,
+	method: string,
+	headers: Record<string, string>,
+	body?: Uint8Array,
+): Promise<NodeResponse> {
+	return new Promise((resolve, reject) => {
+		const parsed = new URL(url);
+		const options: import("https").RequestOptions = {
+			hostname: parsed.hostname,
+			port: parsed.port || 443,
+			path: parsed.pathname + parsed.search,
+			method,
+			headers: {
+				...headers,
+				...(body && body.length > 0 ? { "content-length": String(body.length) } : {}),
+			},
+		};
+
+		const req = nodeHttps.request(options, (res) => {
+			const chunks: Buffer[] = [];
+			res.on("data", (chunk: Buffer) => chunks.push(chunk));
+			res.on("end", () => {
+				const buf = Buffer.concat(chunks);
+				const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+				resolve({
+					status: res.statusCode ?? 0,
+					text: buf.toString("utf-8"),
+					arrayBuffer,
+				});
+			});
+			res.on("error", reject);
+		});
+
+		req.on("error", reject);
+		if (body && body.length > 0) req.write(body);
+		req.end();
+	});
 }
 
 // ---------- S3 API class ----------
@@ -118,7 +166,7 @@ export class S3Api {
 			"GET", this.host, this.cfg.bucket, query,
 			new Uint8Array(0), this.cfg.accessKey, this.cfg.secretKey, this.cfg.region,
 		);
-		const resp = await requestUrl({ url: this.bucketUrl(query), method: "GET", headers, throw: false });
+		const resp = await nodeRequest(this.bucketUrl(query), "GET", headers);
 		if (resp.status === 200) return true;
 		throw new Error(`HTTP ${resp.status}: ${resp.text.slice(0, 300)}`);
 	}
@@ -136,7 +184,7 @@ export class S3Api {
 				new Uint8Array(0), this.cfg.accessKey, this.cfg.secretKey, this.cfg.region,
 			);
 
-			const resp = await requestUrl({ url: this.bucketUrl(query), method: "GET", headers });
+			const resp = await nodeRequest(this.bucketUrl(query), "GET", headers);
 
 			if (resp.status !== 200) {
 				throw new Error(`S3 list failed (${resp.status}): ${resp.text.slice(0, 200)}`);
@@ -164,26 +212,20 @@ export class S3Api {
 			"GET", this.host, this.objectPath(key), {},
 			new Uint8Array(0), this.cfg.accessKey, this.cfg.secretKey, this.cfg.region,
 		);
-		const resp = await requestUrl({ url: this.objectUrl(key), method: "GET", headers });
+		const resp = await nodeRequest(this.objectUrl(key), "GET", headers);
 		if (resp.status !== 200) {
 			throw new Error(`S3 get failed (${resp.status}): ${key}`);
 		}
 		return resp.arrayBuffer;
 	}
 
-	async putObject(key: string, content: ArrayBuffer, mimeType: string): Promise<void> {
+	async putObject(key: string, content: ArrayBuffer, _mimeType: string): Promise<void> {
 		const body = new Uint8Array(content);
 		const headers = await buildAuthHeaders(
 			"PUT", this.host, this.objectPath(key), {},
 			body, this.cfg.accessKey, this.cfg.secretKey, this.cfg.region,
 		);
-		const resp = await requestUrl({
-			url: this.objectUrl(key),
-			method: "PUT",
-			headers,
-			body: content,
-			contentType: mimeType,
-		});
+		const resp = await nodeRequest(this.objectUrl(key), "PUT", headers, body);
 		if (resp.status < 200 || resp.status >= 300) {
 			throw new Error(`S3 put failed (${resp.status}): ${key}`);
 		}
@@ -194,8 +236,7 @@ export class S3Api {
 			"DELETE", this.host, this.objectPath(key), {},
 			new Uint8Array(0), this.cfg.accessKey, this.cfg.secretKey, this.cfg.region,
 		);
-		const resp = await requestUrl({ url: this.objectUrl(key), method: "DELETE", headers });
-		// 204 = deleted, 404 = already gone — both acceptable
+		const resp = await nodeRequest(this.objectUrl(key), "DELETE", headers);
 		if (resp.status !== 204 && resp.status !== 200 && resp.status !== 404) {
 			throw new Error(`S3 delete failed (${resp.status}): ${key}`);
 		}
