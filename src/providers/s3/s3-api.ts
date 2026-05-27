@@ -113,17 +113,14 @@ export class S3Api {
 	}
 
 	async testConnection(): Promise<boolean> {
-		try {
-			const query = { "list-type": "2", "max-keys": "1" };
-			const headers = await buildAuthHeaders(
-				"GET", this.host, this.cfg.bucket, query,
-				new Uint8Array(0), this.cfg.accessKey, this.cfg.secretKey, this.cfg.region,
-			);
-			const resp = await requestUrl({ url: this.bucketUrl(query), method: "GET", headers });
-			return resp.status === 200;
-		} catch {
-			return false;
-		}
+		const query = { "list-type": "2", "max-keys": "1" };
+		const headers = await buildAuthHeaders(
+			"GET", this.host, this.cfg.bucket, query,
+			new Uint8Array(0), this.cfg.accessKey, this.cfg.secretKey, this.cfg.region,
+		);
+		const resp = await requestUrl({ url: this.bucketUrl(query), method: "GET", headers, throw: false });
+		if (resp.status === 200) return true;
+		throw new Error(`HTTP ${resp.status}: ${resp.text.slice(0, 300)}`);
 	}
 
 	async listAllObjects(): Promise<S3Object[]> {

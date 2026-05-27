@@ -231,8 +231,8 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 								secretKey: s3.secretKey,
 								region: s3.region,
 							});
-							const ok = await provider.testConnection();
-							new Notice(ok ? "S3 connection successful" : "S3 connection failed — check endpoint and credentials");
+							await provider.testConnection();
+							new Notice("S3 connection successful");
 						} catch (e) {
 							new Notice(`S3 connection error: ${e instanceof Error ? e.message : String(e)}`);
 						} finally {
