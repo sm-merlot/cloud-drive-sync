@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, TFile, TFolder, TAbstractFile, setIcon } from "obsidian";
+import { Notice, Plugin, TFile, TFolder, TAbstractFile, setIcon } from "obsidian";
 import { CloudSyncSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, type PluginSettings } from "./types";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
@@ -142,11 +142,8 @@ export default class CloudSyncPlugin extends Plugin {
 
 		this.updateStatusBar("syncing");
 		try {
-			const result = await engine.syncPaths(paths);
+			await engine.syncPaths(paths);
 			this.updateStatusBar("idle");
-			if (Platform.isMobile && result.conflicts > 0) {
-				new Notice(`Sync: ${result.conflicts} conflict${result.conflicts > 1 ? "s" : ""}`);
-			}
 		} catch (e) {
 			this.updateStatusBar("error");
 			console.error("File watcher sync failed:", e);
@@ -278,8 +275,6 @@ export default class CloudSyncPlugin extends Plugin {
 			if (result.errors > 0) parts.push(`${result.errors} errors`);
 			if (manual) {
 				new Notice(parts.length > 0 ? `Sync: ${parts.join(", ")}` : "Everything up to date");
-			} else if (Platform.isMobile && result.conflicts > 0) {
-				new Notice(`Sync: ${parts.join(", ")}`);
 			}
 			await this.checkForPluginUpdate();
 		} catch (e) {
