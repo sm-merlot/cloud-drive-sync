@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, TFolder, TAbstractFile, setIcon } from "obsidian";
+import { Notice, Platform, Plugin, TFile, TFolder, TAbstractFile, setIcon } from "obsidian";
 import { CloudSyncSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, type PluginSettings } from "./types";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
@@ -143,7 +143,7 @@ export default class CloudSyncPlugin extends Plugin {
 			const result = await engine.syncPaths(paths);
 			this.updateStatusBar("idle");
 			const total = result.uploaded + result.downloaded + result.deleted + result.conflicts;
-			if (total > 0 || result.errors > 0) {
+			if (Platform.isMobile && (total > 0 || result.errors > 0)) {
 				const parts: string[] = [];
 				if (result.uploaded > 0) parts.push(`${result.uploaded} uploaded`);
 				if (result.downloaded > 0) parts.push(`${result.downloaded} downloaded`);
@@ -275,8 +275,8 @@ export default class CloudSyncPlugin extends Plugin {
 			if (result.deleted > 0) parts.push(`${result.deleted} deleted`);
 			if (result.conflicts > 0) parts.push(`${result.conflicts} conflicts resolved`);
 			if (result.errors > 0) parts.push(`${result.errors} errors`);
-			if (parts.length === 0) parts.push("everything up to date");
-			new Notice(`Sync complete: ${parts.join(", ")}`);
+			if (Platform.isMobile && parts.length > 0)
+				new Notice(`Sync: ${parts.join(", ")}`);
 			await this.checkForPluginUpdate();
 		} catch (e) {
 			this.currentStage = "idle";
