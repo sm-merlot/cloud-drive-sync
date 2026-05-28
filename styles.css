@@ -19,19 +19,6 @@
 	animation: cloud-sync-spin 1s linear infinite;
 }
 
-.cloud-sync-ribbon-label {
-	display: none;
-}
-
-.is-mobile .cloud-sync-ribbon-label {
-	display: block;
-	font-size: 10px;
-	line-height: 1.2;
-	text-align: center;
-	margin-top: 2px;
-	color: var(--text-muted);
-}
-
 @keyframes cloud-sync-spin {
 	from { transform: rotate(0deg); }
 	to { transform: rotate(360deg); }

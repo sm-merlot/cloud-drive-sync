@@ -318,28 +318,23 @@ export default class CloudSyncPlugin extends Plugin {
 		if (!this.ribbonEl) return;
 		const last = this.settings.syncState.lastSyncTime;
 		switch (state) {
-			case "idle": {
+			case "idle":
 				setIcon(this.ribbonEl, "cloud");
 				this.ribbonEl.classList.remove("cloud-sync-ribbon-syncing");
-				const label = last ? `Cloud Sync · ${relativeTime(last)}` : "Cloud Sync";
-				this.ribbonEl.setAttribute("aria-label", label);
-				this.ribbonEl.createEl("span", {
-					cls: "cloud-sync-ribbon-label",
-					text: last ? relativeTime(last) : "",
-				});
+				this.ribbonEl.setAttribute(
+					"aria-label",
+					last ? `Cloud Sync · ${relativeTime(last)}` : "Cloud Sync"
+				);
 				break;
-			}
 			case "syncing":
 				setIcon(this.ribbonEl, "refresh-cw");
 				this.ribbonEl.classList.add("cloud-sync-ribbon-syncing");
 				this.ribbonEl.setAttribute("aria-label", "Cloud Sync · syncing…");
-				this.ribbonEl.createEl("span", { cls: "cloud-sync-ribbon-label", text: "syncing…" });
 				break;
 			case "error":
 				setIcon(this.ribbonEl, "cloud-off");
 				this.ribbonEl.classList.remove("cloud-sync-ribbon-syncing");
 				this.ribbonEl.setAttribute("aria-label", "Cloud Sync · error");
-				this.ribbonEl.createEl("span", { cls: "cloud-sync-ribbon-label", text: "error" });
 				break;
 		}
 	}
