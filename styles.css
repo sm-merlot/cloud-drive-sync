@@ -15,6 +15,10 @@
 	color: var(--text-error);
 }
 
+.cloud-sync-ribbon-syncing svg {
+	animation: cloud-sync-spin 1s linear infinite;
+}
+
 @keyframes cloud-sync-spin {
 	from { transform: rotate(0deg); }
 	to { transform: rotate(360deg); }

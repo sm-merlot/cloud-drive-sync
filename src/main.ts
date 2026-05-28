@@ -27,6 +27,7 @@ export default class CloudSyncPlugin extends Plugin {
 	private syncIntervalId: number | null = null;
 	private statusRefreshId: number | null = null;
 	private statusBarEl: HTMLElement | null = null;
+	private ribbonEl: HTMLElement | null = null;
 	private pendingPaths: Set<string> = new Set();
 	private debounceTimer: number | null = null;
 	private currentStage = "";
@@ -36,15 +37,16 @@ export default class CloudSyncPlugin extends Plugin {
 
 		this.addSettingTab(new CloudSyncSettingTab(this.app, this));
 
-		this.addRibbonIcon("cloud", "Cloud Sync: Sync now", () => {
-			this.runSync();
+		this.ribbonEl = this.addRibbonIcon("cloud", "Cloud Sync", () => {
+			this.runSync(true);
 		});
+		this.updateRibbon("idle");
 
 		this.addCommand({
 			id: "sync-now",
 			name: "Sync now",
 			callback: () => {
-				this.runSync();
+				this.runSync(true);
 			},
 		});
 
@@ -190,7 +192,10 @@ export default class CloudSyncPlugin extends Plugin {
 	setupStatusRefresh(): void {
 		if (this.statusRefreshId !== null) window.clearInterval(this.statusRefreshId);
 		this.statusRefreshId = window.setInterval(() => {
-			if (this.currentStage === "idle") this.updateStatusBar("idle");
+			if (this.currentStage === "idle") {
+				this.updateStatusBar("idle");
+				this.updateRibbon("idle");
+			}
 		}, STATUS_REFRESH_MS);
 		this.registerInterval(this.statusRefreshId);
 	}
@@ -254,33 +259,40 @@ export default class CloudSyncPlugin extends Plugin {
 		return new SyncEngine(this.app, provider, stateStore, this.settings);
 	}
 
-	async runSync(): Promise<void> {
+	async runSync(manual = false): Promise<void> {
 		const engine = this.getSyncEngine();
 		if (!engine) return;
 
 		engine.onProgress = () => {
 			this.currentStage = "syncing";
 			this.updateStatusBar("syncing");
+			this.updateRibbon("syncing");
 		};
 
 		this.currentStage = "syncing";
 		this.updateStatusBar("syncing", "Connecting...");
+		this.updateRibbon("syncing");
 		try {
 			const result = await engine.sync();
 			this.currentStage = "idle";
 			this.updateStatusBar("idle");
+			this.updateRibbon("idle");
 			const parts: string[] = [];
 			if (result.uploaded > 0) parts.push(`${result.uploaded} uploaded`);
 			if (result.downloaded > 0) parts.push(`${result.downloaded} downloaded`);
 			if (result.deleted > 0) parts.push(`${result.deleted} deleted`);
 			if (result.conflicts > 0) parts.push(`${result.conflicts} conflicts resolved`);
 			if (result.errors > 0) parts.push(`${result.errors} errors`);
-			if (Platform.isMobile && parts.length > 0)
+			if (manual) {
+				new Notice(parts.length > 0 ? `Sync: ${parts.join(", ")}` : "Everything up to date");
+			} else if (Platform.isMobile && parts.length > 0) {
 				new Notice(`Sync: ${parts.join(", ")}`);
+			}
 			await this.checkForPluginUpdate();
 		} catch (e) {
 			this.currentStage = "idle";
 			this.updateStatusBar("error");
+			this.updateRibbon("error");
 			new Notice(
 				`Sync failed: ${e instanceof Error ? e.message : String(e)}`
 			);
@@ -312,6 +324,31 @@ export default class CloudSyncPlugin extends Plugin {
 		if (!provider) return;
 		const updater = new PluginUpdater(this.app, this.manifest.id, provider);
 		await updater.checkAndPrompt();
+	}
+
+	private updateRibbon(state: "idle" | "syncing" | "error"): void {
+		if (!this.ribbonEl) return;
+		const last = this.settings.syncState.lastSyncTime;
+		switch (state) {
+			case "idle":
+				setIcon(this.ribbonEl, "cloud");
+				this.ribbonEl.classList.remove("cloud-sync-ribbon-syncing");
+				this.ribbonEl.setAttribute(
+					"aria-label",
+					last ? `Cloud Sync · ${relativeTime(last)}` : "Cloud Sync"
+				);
+				break;
+			case "syncing":
+				setIcon(this.ribbonEl, "refresh-cw");
+				this.ribbonEl.classList.add("cloud-sync-ribbon-syncing");
+				this.ribbonEl.setAttribute("aria-label", "Cloud Sync · syncing…");
+				break;
+			case "error":
+				setIcon(this.ribbonEl, "cloud-off");
+				this.ribbonEl.classList.remove("cloud-sync-ribbon-syncing");
+				this.ribbonEl.setAttribute("aria-label", "Cloud Sync · error");
+				break;
+		}
 	}
 
 	private updateStatusBar(state: "idle" | "syncing" | "error", stageMsg?: string): void {
