@@ -58,7 +58,7 @@ export default class CloudSyncPlugin extends Plugin {
 
 		this.statusBarEl = this.addStatusBarItem();
 		this.statusBarEl.addClass("mod-clickable");
-		this.statusBarEl.addEventListener("click", () => this.runSync());
+		this.statusBarEl.addEventListener("click", () => this.runSync(true));
 		this.statusBarEl.setAttribute("aria-label", "Click to sync");
 		this.updateStatusBar("idle");
 
