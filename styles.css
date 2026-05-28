@@ -28,22 +28,29 @@
 	align-items: center;
 	justify-content: center;
 	position: fixed;
-	bottom: 16px;
-	right: 16px;
-	width: 28px;
-	height: 28px;
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity 0.25s ease;
+	top: calc(env(safe-area-inset-top, 0px) + 10px);
+	left: 8px;
+	width: 30px;
+	height: 30px;
+	pointer-events: auto;
+	cursor: pointer;
 	z-index: 1000;
-	color: var(--interactive-accent);
+	color: white;
+	opacity: 0.85;
 }
 
-.is-mobile .cloud-sync-float.visible {
-	opacity: 1;
+.is-mobile .cloud-sync-float:active {
+	opacity: 0.5;
 }
 
-.cloud-sync-float svg {
+/* hide on tablet (iPad) — phones are typically <768px */
+@media (min-width: 768px) {
+	.is-mobile .cloud-sync-float {
+		display: none;
+	}
+}
+
+.cloud-sync-float-syncing svg {
 	animation: cloud-sync-spin 1s linear infinite;
 }
 

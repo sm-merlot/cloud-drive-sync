@@ -64,7 +64,8 @@ export default class CloudSyncPlugin extends Plugin {
 		this.updateStatusBar("idle");
 
 		this.syncFloatEl = document.body.createEl("div", { cls: "cloud-sync-float" });
-		setIcon(this.syncFloatEl, "refresh-cw");
+		setIcon(this.syncFloatEl, "cloud");
+		this.syncFloatEl.addEventListener("click", () => this.runSync(true));
 
 		this.setupSyncInterval();
 		this.setupStatusRefresh();
@@ -324,8 +325,13 @@ export default class CloudSyncPlugin extends Plugin {
 
 	private updateRibbon(state: "idle" | "syncing" | "error"): void {
 		if (this.syncFloatEl) {
-			if (state === "syncing") this.syncFloatEl.classList.add("visible");
-			else this.syncFloatEl.classList.remove("visible");
+			if (state === "syncing") {
+				setIcon(this.syncFloatEl, "refresh-cw");
+				this.syncFloatEl.classList.add("cloud-sync-float-syncing");
+			} else {
+				setIcon(this.syncFloatEl, state === "error" ? "cloud-off" : "cloud");
+				this.syncFloatEl.classList.remove("cloud-sync-float-syncing");
+			}
 		}
 		if (!this.ribbonEl) return;
 		const last = this.settings.syncState.lastSyncTime;
