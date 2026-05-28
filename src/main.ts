@@ -12,7 +12,7 @@ import { PluginUpdater } from "./updater";
 import { isDotPath, shouldExclude } from "./util/path";
 
 const DEBOUNCE_MS = 5000;
-const STATUS_REFRESH_MS = 60_000;
+const STATUS_REFRESH_MS = 10_000;
 
 function relativeTime(ms: number): string {
 	const diff = Date.now() - ms;
