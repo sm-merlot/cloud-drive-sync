@@ -144,15 +144,8 @@ export default class CloudSyncPlugin extends Plugin {
 		try {
 			const result = await engine.syncPaths(paths);
 			this.updateStatusBar("idle");
-			const total = result.uploaded + result.downloaded + result.deleted + result.conflicts;
-			if (Platform.isMobile && (total > 0 || result.errors > 0)) {
-				const parts: string[] = [];
-				if (result.uploaded > 0) parts.push(`${result.uploaded} uploaded`);
-				if (result.downloaded > 0) parts.push(`${result.downloaded} downloaded`);
-				if (result.deleted > 0) parts.push(`${result.deleted} deleted`);
-				if (result.conflicts > 0) parts.push(`${result.conflicts} conflicts`);
-				if (result.errors > 0) parts.push(`${result.errors} errors`);
-				new Notice(`Sync: ${parts.join(", ")}`);
+			if (Platform.isMobile && result.conflicts > 0) {
+				new Notice(`Sync: ${result.conflicts} conflict${result.conflicts > 1 ? "s" : ""}`);
 			}
 		} catch (e) {
 			this.updateStatusBar("error");
@@ -285,7 +278,7 @@ export default class CloudSyncPlugin extends Plugin {
 			if (result.errors > 0) parts.push(`${result.errors} errors`);
 			if (manual) {
 				new Notice(parts.length > 0 ? `Sync: ${parts.join(", ")}` : "Everything up to date");
-			} else if (Platform.isMobile && parts.length > 0) {
+			} else if (Platform.isMobile && result.conflicts > 0) {
 				new Notice(`Sync: ${parts.join(", ")}`);
 			}
 			await this.checkForPluginUpdate();
