@@ -311,7 +311,8 @@ export class SyncEngine {
 
 				if (local && remote && record) {
 					const localChanged = local.stat.mtime > record.localModTime;
-					const remoteChanged = remote.modifiedTime > record.remoteModTime;
+					const remoteChanged = remote.modifiedTime > record.remoteModTime
+						&& remote.md5Checksum !== record.contentHash;
 					if (localChanged && remoteChanged) {
 						this.pushConflictOrResolve(actions, path, local, remote);
 					} else if (localChanged) {
@@ -709,7 +710,8 @@ export class SyncEngine {
 
 			if (local && remote && record) {
 				const localChanged = local.stat.mtime > record.localModTime;
-				const remoteChanged = remote.modifiedTime > record.remoteModTime;
+				const remoteChanged = remote.modifiedTime > record.remoteModTime
+					&& remote.md5Checksum !== record.contentHash;
 
 				if (localChanged && remoteChanged) {
 					this.pushConflictOrResolve(actions, path, local, remote);
