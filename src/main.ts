@@ -28,6 +28,7 @@ export default class CloudSyncPlugin extends Plugin {
 	private statusRefreshId: number | null = null;
 	private statusBarEl: HTMLElement | null = null;
 	private ribbonEl: HTMLElement | null = null;
+	private syncFloatEl: HTMLElement | null = null;
 	private pendingPaths: Set<string> = new Set();
 	private debounceTimer: number | null = null;
 	private currentStage = "";
@@ -62,6 +63,9 @@ export default class CloudSyncPlugin extends Plugin {
 		this.statusBarEl.setAttribute("aria-label", "Click to sync");
 		this.updateStatusBar("idle");
 
+		this.syncFloatEl = document.body.createEl("div", { cls: "cloud-sync-float" });
+		setIcon(this.syncFloatEl, "refresh-cw");
+
 		this.setupSyncInterval();
 		this.setupStatusRefresh();
 		this.setupFileWatcher();
@@ -77,6 +81,7 @@ export default class CloudSyncPlugin extends Plugin {
 		if (this.syncIntervalId !== null) window.clearInterval(this.syncIntervalId);
 		if (this.statusRefreshId !== null) window.clearInterval(this.statusRefreshId);
 		if (this.debounceTimer !== null) window.clearTimeout(this.debounceTimer);
+		this.syncFloatEl?.remove();
 	}
 
 	private setupFileWatcher(): void {
@@ -141,11 +146,14 @@ export default class CloudSyncPlugin extends Plugin {
 		if (!engine) return;
 
 		this.updateStatusBar("syncing");
+		this.updateRibbon("syncing");
 		try {
 			await engine.syncPaths(paths);
 			this.updateStatusBar("idle");
+			this.updateRibbon("idle");
 		} catch (e) {
 			this.updateStatusBar("error");
+			this.updateRibbon("error");
 			console.error("File watcher sync failed:", e);
 		}
 	}
@@ -315,6 +323,10 @@ export default class CloudSyncPlugin extends Plugin {
 	}
 
 	private updateRibbon(state: "idle" | "syncing" | "error"): void {
+		if (this.syncFloatEl) {
+			if (state === "syncing") this.syncFloatEl.classList.add("visible");
+			else this.syncFloatEl.classList.remove("visible");
+		}
 		if (!this.ribbonEl) return;
 		const last = this.settings.syncState.lastSyncTime;
 		switch (state) {

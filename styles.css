@@ -19,6 +19,34 @@
 	animation: cloud-sync-spin 1s linear infinite;
 }
 
+.cloud-sync-float {
+	display: none;
+}
+
+.is-mobile .cloud-sync-float {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	position: fixed;
+	bottom: 16px;
+	right: 16px;
+	width: 28px;
+	height: 28px;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.25s ease;
+	z-index: 1000;
+	color: var(--interactive-accent);
+}
+
+.is-mobile .cloud-sync-float.visible {
+	opacity: 1;
+}
+
+.cloud-sync-float svg {
+	animation: cloud-sync-spin 1s linear infinite;
+}
+
 @keyframes cloud-sync-spin {
 	from { transform: rotate(0deg); }
 	to { transform: rotate(360deg); }
