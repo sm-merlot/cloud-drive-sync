@@ -665,6 +665,8 @@ export class SyncEngine {
 	}
 
 	private shouldSkip(path: string): boolean {
+		// Allow .cloud-drive-sync/ through so plugin files sync and self-update works
+		if (path === ".cloud-drive-sync" || path.startsWith(".cloud-drive-sync/")) return false;
 		return isDotPath(path) || shouldExclude(path, this.settings.excludePatterns);
 	}
 
