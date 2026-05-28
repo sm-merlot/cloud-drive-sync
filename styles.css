@@ -21,33 +21,17 @@
 
 .cloud-sync-float {
 	display: none;
-}
-
-.is-mobile .cloud-sync-float {
-	display: flex;
 	align-items: center;
 	justify-content: center;
-	position: fixed;
-	top: calc(env(safe-area-inset-top, 0px) + 10px);
-	left: 8px;
-	width: 30px;
-	height: 30px;
-	pointer-events: auto;
 	cursor: pointer;
 	z-index: 1000;
 	color: white;
 	opacity: 0.85;
+	pointer-events: auto;
 }
 
-.is-mobile .cloud-sync-float:active {
+.cloud-sync-float:active {
 	opacity: 0.5;
-}
-
-/* hide on tablet (iPad) — phones are typically <768px */
-@media (min-width: 768px) {
-	.is-mobile .cloud-sync-float {
-		display: none;
-	}
 }
 
 .cloud-sync-float-syncing svg {

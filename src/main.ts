@@ -29,6 +29,7 @@ export default class CloudSyncPlugin extends Plugin {
 	private statusBarEl: HTMLElement | null = null;
 	private ribbonEl: HTMLElement | null = null;
 	private syncFloatEl: HTMLElement | null = null;
+	private syncFloatResizeObserver: ResizeObserver | null = null;
 	private pendingPaths: Set<string> = new Set();
 	private debounceTimer: number | null = null;
 	private currentStage = "";
@@ -71,11 +72,17 @@ export default class CloudSyncPlugin extends Plugin {
 		this.setupStatusRefresh();
 		this.setupFileWatcher();
 
-		if (this.settings.syncOnStartup) {
-			this.app.workspace.onLayoutReady(async () => {
-				await this.runSync();
-			});
-		}
+		this.app.workspace.onLayoutReady(() => {
+			this.positionSyncFloat();
+			this.registerEvent(
+				this.app.workspace.on("layout-change", () => this.positionSyncFloat())
+			);
+			this.syncFloatResizeObserver = new ResizeObserver(() => this.positionSyncFloat());
+			this.syncFloatResizeObserver.observe(document.body);
+			this.register(() => this.syncFloatResizeObserver?.disconnect());
+
+			if (this.settings.syncOnStartup) this.runSync();
+		});
 	}
 
 	onunload(): void {
@@ -83,6 +90,54 @@ export default class CloudSyncPlugin extends Plugin {
 		if (this.statusRefreshId !== null) window.clearInterval(this.statusRefreshId);
 		if (this.debounceTimer !== null) window.clearTimeout(this.debounceTimer);
 		this.syncFloatEl?.remove();
+		this.syncFloatResizeObserver?.disconnect();
+	}
+
+	private positionSyncFloat(): void {
+		if (!this.syncFloatEl) return;
+
+		// Phone only — hide on tablet/desktop
+		if (window.innerWidth >= 768) {
+			this.syncFloatEl.style.display = "none";
+			return;
+		}
+
+		// Try common selectors for the left sidebar toggle button
+		const selectors = [
+			'[aria-label="Open left sidebar"]',
+			'[aria-label="Show left sidebar"]',
+			'[aria-label="Toggle left sidebar"]',
+			".view-header-nav-buttons .clickable-icon:first-child",
+			".view-header-nav-buttons > *:first-child",
+		];
+
+		let target: Element | null = null;
+		for (const sel of selectors) {
+			target = document.querySelector(sel);
+			if (target) break;
+		}
+
+		if (target) {
+			const r = target.getBoundingClientRect();
+			Object.assign(this.syncFloatEl.style, {
+				display: "flex",
+				position: "fixed",
+				top: `${r.top}px`,
+				left: `${r.right}px`,
+				width: `${r.width}px`,
+				height: `${r.height}px`,
+			});
+		} else {
+			// Fallback: safe-area top-left
+			Object.assign(this.syncFloatEl.style, {
+				display: "flex",
+				position: "fixed",
+				top: `calc(env(safe-area-inset-top, 0px) + 8px)`,
+				left: "52px",
+				width: "36px",
+				height: "36px",
+			});
+		}
 	}
 
 	private setupFileWatcher(): void {
