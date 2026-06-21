@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, TFolder, TAbstractFile, setIcon } from "obsidian";
+import { Notice, Platform, Plugin, TFile, TFolder, TAbstractFile, setIcon } from "obsidian";
 import { CloudSyncSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, type PluginSettings } from "./types";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
@@ -89,8 +89,11 @@ export default class CloudSyncPlugin extends Plugin {
 	private positionSyncFloat(): void {
 		if (!this.syncFloatEl) return;
 
-		// Phone only — hide on tablet/desktop
-		if (window.innerWidth >= 768) {
+		// Phone only — hide on tablet/desktop. Use Obsidian's device
+		// classification, not viewport width: CSS innerWidth depends on the
+		// device's density / display-size setting, so a width threshold
+		// wrongly hides the float on phones that report >= 768 CSS px.
+		if (!Platform.isPhone) {
 			this.syncFloatEl.style.display = "none";
 			return;
 		}

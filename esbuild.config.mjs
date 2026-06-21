@@ -1,7 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
-import { execSync } from "child_process";
 import { copyFileSync, mkdirSync } from "fs";
 
 const banner = `/*
@@ -11,13 +10,6 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = process.argv[2] === "production";
-
-let commitSha = "unknown";
-try {
-	commitSha = execSync("git rev-parse --short HEAD").toString().trim();
-} catch {
-	// not in a git repo
-}
 
 const context = await esbuild.context({
 	banner: {
@@ -41,9 +33,6 @@ const context = await esbuild.context({
 		"@lezer/lr",
 		...builtins,
 	],
-	define: {
-		"BUILD_COMMIT_SHA": JSON.stringify(commitSha),
-	},
 	format: "cjs",
 	target: "es2018",
 	logLevel: "info",

@@ -145,7 +145,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 			: "Never synced";
 		containerEl.createEl("p", { text: statusText });
 		containerEl.createEl("p", {
-			text: `Version: ${BUILD_COMMIT_SHA}`,
+			text: `Version: ${this.plugin.manifest.version}`,
 			cls: "setting-item-description",
 		});
 	}
