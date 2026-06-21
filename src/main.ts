@@ -8,7 +8,6 @@ import { GoogleDriveProvider } from "./providers/google-drive/google-drive-provi
 import { S3Provider } from "./providers/s3/s3-provider";
 import { SyncEngine } from "./sync/sync-engine";
 import { SyncStateStore } from "./sync/sync-state";
-import { PluginUpdater } from "./updater";
 import { isDotPath, shouldExclude } from "./util/path";
 
 const DEBOUNCE_MS = 5000;
@@ -50,12 +49,6 @@ export default class CloudSyncPlugin extends Plugin {
 			callback: () => {
 				this.runSync(true);
 			},
-		});
-
-		this.addCommand({
-			id: "check-plugin-update",
-			name: "Check for plugin update",
-			callback: () => this.checkForPluginUpdate(),
 		});
 
 		this.statusBarEl = this.addStatusBarItem();
@@ -340,7 +333,6 @@ export default class CloudSyncPlugin extends Plugin {
 			if (manual) {
 				new Notice(parts.length > 0 ? `Sync: ${parts.join(", ")}` : "Everything up to date");
 			}
-			await this.checkForPluginUpdate();
 		} catch (e) {
 			this.currentStage = "idle";
 			this.updateStatusBar("error");
@@ -369,13 +361,6 @@ export default class CloudSyncPlugin extends Plugin {
 			await this.saveSettings();
 			new Notice(`Sync folder set to: ${chosen.name}`);
 		}
-	}
-
-	private async checkForPluginUpdate(): Promise<void> {
-		const provider = this.getSyncEngine()?.getProvider();
-		if (!provider) return;
-		const updater = new PluginUpdater(this.app, this.manifest.id, provider);
-		await updater.checkAndPrompt();
 	}
 
 	private updateRibbon(state: "idle" | "syncing" | "error"): void {
