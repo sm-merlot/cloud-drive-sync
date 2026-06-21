@@ -1,7 +1,7 @@
 {
 	"id": "cloud-drive-sync",
 	"name": "Cloud Drive Sync",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"minAppVersion": "0.15.0",
 	"description": "Two-way sync between your Obsidian vault and cloud storage providers (Google Drive, Proton Drive).",
 	"author": "scme0",

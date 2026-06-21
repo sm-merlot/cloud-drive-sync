@@ -19,21 +19,6 @@
 	animation: cloud-sync-spin 1s linear infinite;
 }
 
-.cloud-sync-float {
-	display: none;
-	align-items: center;
-	justify-content: center;
-	cursor: pointer;
-	z-index: 1000;
-	color: white;
-	opacity: 0.85;
-	pointer-events: auto;
-}
-
-.cloud-sync-float:active {
-	opacity: 0.5;
-}
-
 .cloud-sync-float-syncing svg {
 	animation: cloud-sync-spin 1s linear infinite;
 }

@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, TFile, TFolder, TAbstractFile, setIcon } from "obsidian";
+import { ItemView, Notice, Platform, Plugin, TFile, TFolder, TAbstractFile, setIcon } from "obsidian";
 import { CloudSyncSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, type PluginSettings } from "./types";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
@@ -27,8 +27,7 @@ export default class CloudSyncPlugin extends Plugin {
 	private statusRefreshId: number | null = null;
 	private statusBarEl: HTMLElement | null = null;
 	private ribbonEl: HTMLElement | null = null;
-	private syncFloatEl: HTMLElement | null = null;
-	private syncFloatResizeObserver: ResizeObserver | null = null;
+	private mobileActionEl: HTMLElement | null = null;
 	private pendingPaths: Set<string> = new Set();
 	private debounceTimer: number | null = null;
 	private currentStage = "";
@@ -38,9 +37,13 @@ export default class CloudSyncPlugin extends Plugin {
 
 		this.addSettingTab(new CloudSyncSettingTab(this.app, this));
 
-		this.ribbonEl = this.addRibbonIcon("cloud", "Cloud Sync", () => {
-			this.runSync(true);
-		});
+		// Ribbon icon only on desktop; phones use the native view-header
+		// action button added in setupMobileAction().
+		if (!Platform.isPhone) {
+			this.ribbonEl = this.addRibbonIcon("cloud", "Cloud Sync", () => {
+				this.runSync(true);
+			});
+		}
 		this.updateRibbon("idle");
 
 		this.addCommand({
@@ -57,23 +60,12 @@ export default class CloudSyncPlugin extends Plugin {
 		this.statusBarEl.setAttribute("aria-label", "Click to sync");
 		this.updateStatusBar("idle");
 
-		this.syncFloatEl = document.body.createEl("div", { cls: "cloud-sync-float" });
-		setIcon(this.syncFloatEl, "cloud");
-		this.syncFloatEl.addEventListener("click", () => this.runSync(true));
-
 		this.setupSyncInterval();
 		this.setupStatusRefresh();
 		this.setupFileWatcher();
 
 		this.app.workspace.onLayoutReady(() => {
-			this.positionSyncFloat();
-			this.registerEvent(
-				this.app.workspace.on("layout-change", () => this.positionSyncFloat())
-			);
-			this.syncFloatResizeObserver = new ResizeObserver(() => this.positionSyncFloat());
-			this.syncFloatResizeObserver.observe(document.body);
-			this.register(() => this.syncFloatResizeObserver?.disconnect());
-
+			this.setupMobileAction();
 			if (this.settings.syncOnStartup) this.runSync();
 		});
 	}
@@ -82,58 +74,27 @@ export default class CloudSyncPlugin extends Plugin {
 		if (this.syncIntervalId !== null) window.clearInterval(this.syncIntervalId);
 		if (this.statusRefreshId !== null) window.clearInterval(this.statusRefreshId);
 		if (this.debounceTimer !== null) window.clearTimeout(this.debounceTimer);
-		this.syncFloatEl?.remove();
-		this.syncFloatResizeObserver?.disconnect();
+		this.mobileActionEl?.remove();
+		this.mobileActionEl = null;
 	}
 
-	private positionSyncFloat(): void {
-		if (!this.syncFloatEl) return;
+	// Phone only: add a "cloud" action to the active view's header using
+	// Obsidian's native addAction API, which positions and styles the button
+	// for us. Re-added on leaf change since each view has its own header.
+	private setupMobileAction(): void {
+		if (!Platform.isPhone) return;
+		this.addMobileActionToLeaf();
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", () => this.addMobileActionToLeaf())
+		);
+	}
 
-		// Phone only — hide on tablet/desktop. Use Obsidian's device
-		// classification, not viewport width: CSS innerWidth depends on the
-		// device's density / display-size setting, so a width threshold
-		// wrongly hides the float on phones that report >= 768 CSS px.
-		if (!Platform.isPhone) {
-			this.syncFloatEl.style.display = "none";
-			return;
-		}
-
-		// Try common selectors for the left sidebar toggle button
-		const selectors = [
-			'[aria-label="Open left sidebar"]',
-			'[aria-label="Show left sidebar"]',
-			'[aria-label="Toggle left sidebar"]',
-			".view-header-nav-buttons .clickable-icon:first-child",
-			".view-header-nav-buttons > *:first-child",
-		];
-
-		let target: Element | null = null;
-		for (const sel of selectors) {
-			target = document.querySelector(sel);
-			if (target) break;
-		}
-
-		if (target) {
-			const r = target.getBoundingClientRect();
-			Object.assign(this.syncFloatEl.style, {
-				display: "flex",
-				position: "fixed",
-				top: `${r.top}px`,
-				left: `${r.right}px`,
-				width: `${r.width}px`,
-				height: `${r.height}px`,
-			});
-		} else {
-			// Fallback: safe-area top-left
-			Object.assign(this.syncFloatEl.style, {
-				display: "flex",
-				position: "fixed",
-				top: `calc(env(safe-area-inset-top, 0px) + 8px)`,
-				left: "52px",
-				width: "36px",
-				height: "36px",
-			});
-		}
+	private addMobileActionToLeaf(): void {
+		const leaf = this.app.workspace.getMostRecentLeaf();
+		if (!leaf || !(leaf.view instanceof ItemView)) return;
+		this.mobileActionEl?.remove();
+		this.mobileActionEl = leaf.view.addAction("cloud", "Cloud Sync", () => this.runSync(true));
+		this.updateRibbon("idle");
 	}
 
 	private setupFileWatcher(): void {
@@ -367,13 +328,13 @@ export default class CloudSyncPlugin extends Plugin {
 	}
 
 	private updateRibbon(state: "idle" | "syncing" | "error"): void {
-		if (this.syncFloatEl) {
+		if (this.mobileActionEl) {
 			if (state === "syncing") {
-				setIcon(this.syncFloatEl, "refresh-cw");
-				this.syncFloatEl.classList.add("cloud-sync-float-syncing");
+				setIcon(this.mobileActionEl, "refresh-cw");
+				this.mobileActionEl.classList.add("cloud-sync-float-syncing");
 			} else {
-				setIcon(this.syncFloatEl, state === "error" ? "cloud-off" : "cloud");
-				this.syncFloatEl.classList.remove("cloud-sync-float-syncing");
+				setIcon(this.mobileActionEl, state === "error" ? "cloud-off" : "cloud");
+				this.mobileActionEl.classList.remove("cloud-sync-float-syncing");
 			}
 		}
 		if (!this.ribbonEl) return;
