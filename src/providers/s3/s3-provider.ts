@@ -60,7 +60,7 @@ export class S3Provider implements CloudProvider {
 			const parentPath = lastSlash >= 0 ? folderPath.slice(0, lastSlash) : "";
 
 			out.push({
-				id: folderPath,
+				id: `${folderPath}/.keep`,
 				name,
 				path: folderPath,
 				modifiedTime: 0,
