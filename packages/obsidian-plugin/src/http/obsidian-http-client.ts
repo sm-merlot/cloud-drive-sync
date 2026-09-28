@@ -48,10 +48,13 @@ export class ObsidianHttpClient implements HttpClient {
 			});
 		}
 
+		// rclone-serve-s3 sends Last-Modified but no Cache-Control, so iOS's
+		// native HTTP cache may heuristically reuse an old GET body for an
+		// object URL (DEV-208). Force revalidation on every request.
 		const resp = await requestUrl({
 			url: req.url,
 			method: req.method,
-			headers: req.headers,
+			headers: { ...req.headers, "cache-control": "no-cache" },
 			body: req.body && req.body.length > 0 ? req.body.buffer as ArrayBuffer : undefined,
 			throw: false,
 		});

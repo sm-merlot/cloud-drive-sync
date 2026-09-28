@@ -217,6 +217,18 @@ describe("SyncEngine classification", () => {
 		expect(new TextDecoder().decode(fs.files.get("a.md")!.bytes)).toBe("v2");
 	});
 
+	it("stale download that doesn't match the listing etag is not written locally", async () => {
+		fs.setFile("a.md", "v2 local edit", 1000);
+		provider.setObject("a.md", "v1 cached", 2000, computeMD5(new TextEncoder().encode("v3 server").buffer as ArrayBuffer));
+		const { store } = makeState([record("a.md", { size: 13 })]);
+		const before = { ...store.getRecord("a.md")! };
+		const result = await makeEngine(fs, provider, store, ui).sync();
+		expect(result.downloaded).toBe(0);
+		expect(result.errors).toBe(1);
+		expect(new TextDecoder().decode(fs.files.get("a.md")!.bytes)).toBe("v2 local edit");
+		expect(store.getRecord("a.md")).toEqual(before);
+	});
+
 	it("both changed with identical content auto-resolves silently (verification read)", async () => {
 		fs.setFile("a.md", "same", 2000);
 		provider.setObject("a.md", "same", 2000);
