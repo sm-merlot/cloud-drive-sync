@@ -543,7 +543,7 @@ export class SyncEngine {
 
 		if (this.settings.conflictStrategy === "smart-merge") {
 			const mimeType = guessMimeType(path);
-			const remoteContent = await this.provider.downloadFile(remote.id);
+			const remoteContent = await this.downloadVerified(remote);
 			if (!isProbablyText(localContent, mimeType) || !isProbablyText(remoteContent, mimeType)) {
 				// Binary content — a line merge would corrupt it
 				return conflictIssue;
@@ -670,7 +670,7 @@ export class SyncEngine {
 
 		const localBytes = await this.fs.readFile(this.root, vaultPath);
 		const localContent = toArrayBuffer(localBytes);
-		const remoteContent = await this.provider.downloadFile(remoteId);
+		const remoteContent = await this.downloadVerified(remote);
 		if (!isProbablyText(localContent, mimeType) || !isProbablyText(remoteContent, mimeType)) {
 			this.onNotice?.(`Cannot merge binary file: ${vaultPath}`);
 			return;
@@ -909,8 +909,8 @@ export class SyncEngine {
 			}
 
 			case "download": {
-				const content = await this.provider.downloadFile(action.remoteId);
 				const remote = remoteMap.get(action.vaultPath)!;
+				const content = await this.downloadVerified(remote);
 				await this.fs.writeFile(this.root, action.vaultPath, new Uint8Array(content));
 
 				const hash = computeMD5(content);
@@ -946,8 +946,8 @@ export class SyncEngine {
 			}
 
 			case "update-local": {
-				const content = await this.provider.downloadFile(action.remoteId);
 				const remote = remoteMap.get(action.vaultPath)!;
+				const content = await this.downloadVerified(remote);
 				await this.fs.writeFile(this.root, action.vaultPath, new Uint8Array(content));
 
 				const hash = computeMD5(content);
@@ -977,6 +977,20 @@ export class SyncEngine {
 	}
 
 	// ---------- helpers ----------
+
+	// A download whose bytes don't match the listing's ETag is stale: iOS's
+	// native HTTP stack can serve a cached GET body for the same object URL.
+	// Writing it locally would record the old content as in sync, so the
+	// newer remote copy never comes down and the next local edit overwrites
+	// it. Refuse it and let the next sync retry.
+	private async downloadVerified(remote: RemoteFileInfo): Promise<ArrayBuffer> {
+		const content = await this.provider.downloadFile(remote.id);
+		const etag = remote.md5Checksum;
+		if (etag && !isMultipartEtag(etag) && computeMD5(content) !== etag) {
+			throw new Error(`Downloaded ${remote.path} does not match the remote listing (stale response); skipped, next sync retries`);
+		}
+		return content;
+	}
 
 	private shouldSkip(path: string): boolean {
 		return isDotPath(path) || shouldExclude(path, this.settings.excludePatterns);
