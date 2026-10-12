@@ -45,8 +45,30 @@ async function signingKey(secret: string, date: string, region: string): Promise
 	return hmac(k3, "aws4_request");
 }
 
+// SigV4 demands RFC 3986 encoding, which `encodeURIComponent` does not give:
+// it leaves !'()* literal. rclone's `serve s3` percent-decodes the request path
+// and re-encodes it strictly before verifying, so a literal "(" in the URL is
+// signed as "(" by us and as "%28" by the server — SignatureDoesNotMatch, which
+// surfaces as a 403 on every key holding one of those characters.
+function rfc3986(s: string): string {
+	return encodeURIComponent(s).replace(
+		/[!'()*]/g,
+		(c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+	);
+}
+
 function encodePath(path: string): string {
-	return path.split("/").map((s) => encodeURIComponent(s)).join("/");
+	return path.split("/").map(rfc3986).join("/");
+}
+
+// The signed query string and the one on the wire must match byte for byte.
+// `URLSearchParams` encodes a space as "+" where SigV4 requires "%20", so both
+// sides go through this instead.
+function encodeQuery(query: Record<string, string>): string {
+	return Object.entries(query)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([k, v]) => `${rfc3986(k)}=${rfc3986(v)}`)
+		.join("&");
 }
 
 async function buildAuthHeaders(
@@ -66,10 +88,7 @@ async function buildAuthHeaders(
 	const payloadHash = body.length === 0 ? EMPTY_SHA256 : await sha256Hex(body);
 
 	const canonicalUri = "/" + encodePath(path);
-	const canonicalQS = Object.entries(query)
-		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-		.join("&");
+	const canonicalQS = encodeQuery(query);
 
 	const canonicalHeaders =
 		`host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${datetime}\n`;
@@ -120,11 +139,11 @@ export class S3Api {
 	private objectUrl(key: string, query?: Record<string, string>): string {
 		const base = `${this.cfg.endpoint}/${this.cfg.bucket}/${encodePath(key)}`;
 		if (!query || Object.keys(query).length === 0) return base;
-		return `${base}?${new URLSearchParams(query).toString()}`;
+		return `${base}?${encodeQuery(query)}`;
 	}
 
 	private bucketUrl(query: Record<string, string>): string {
-		return `${this.cfg.endpoint}/${this.cfg.bucket}?${new URLSearchParams(query).toString()}`;
+		return `${this.cfg.endpoint}/${this.cfg.bucket}?${encodeQuery(query)}`;
 	}
 
 	private rootUrl(): string {
