@@ -44,6 +44,10 @@ export default class CloudSyncPlugin extends Plugin {
 	// user signs in again; a manual sync reopens the reconnect prompt.
 	googleAuthExpired = false;
 	private reauthModalOpen = false;
+	// True for the whole of a sync, including while it waits on a conflict,
+	// results or plan dialog. Without it the interval timer started another
+	// sync every few minutes and stacked a new dialog over the unanswered one.
+	private syncInFlight = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -165,6 +169,9 @@ export default class CloudSyncPlugin extends Plugin {
 	private async flushPendingSync(): Promise<void> {
 		if (this.pendingPaths.size === 0) return;
 
+		// Left queued; flushed when the running sync finishes.
+		if (this.syncInFlight) return;
+
 		const paths = new Set(this.pendingPaths);
 		this.pendingPaths.clear();
 
@@ -174,6 +181,7 @@ export default class CloudSyncPlugin extends Plugin {
 		const engine = this.getSyncEngine();
 		if (!engine) return;
 
+		this.syncInFlight = true;
 		this.updateStatusBar("syncing");
 		this.updateRibbon("syncing");
 		try {
@@ -188,6 +196,8 @@ export default class CloudSyncPlugin extends Plugin {
 			this.updateStatusBar("error");
 			this.updateRibbon("error");
 			console.error("File watcher sync failed:", e);
+		} finally {
+			this.syncFinished();
 		}
 	}
 
@@ -315,9 +325,15 @@ export default class CloudSyncPlugin extends Plugin {
 			return;
 		}
 
+		if (this.syncInFlight) {
+			if (manual) new Notice("Sync already running. Finish any open sync dialog first.");
+			return;
+		}
+
 		const engine = this.getSyncEngine();
 		if (!engine) return;
 
+		this.syncInFlight = true;
 		engine.onProgress = () => {
 			this.currentStage = "syncing";
 			this.updateStatusBar("syncing");
@@ -352,7 +368,15 @@ export default class CloudSyncPlugin extends Plugin {
 			new Notice(
 				`Sync failed: ${e instanceof Error ? e.message : String(e)}`
 			);
+		} finally {
+			this.syncFinished();
 		}
+	}
+
+	private syncFinished(): void {
+		this.syncInFlight = false;
+		// Edits made while a dialog was open
+		if (this.pendingPaths.size > 0) this.flushPendingSync();
 	}
 
 	private isGoogleAuthExpired(): boolean {
