@@ -6,6 +6,20 @@ const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const SCOPE = "https://www.googleapis.com/auth/drive";
 
+/**
+ * Thrown when Google rejects the stored refresh token (`invalid_grant`): it
+ * expired or was revoked, so no retry will help and the user has to sign in
+ * again. Refresh tokens of an OAuth client in "Testing" publishing status
+ * expire after 7 days, and a Workspace admin's session-length policy can make
+ * them expire sooner.
+ */
+export class GoogleAuthExpiredError extends Error {
+	constructor(detail: string) {
+		super(`Google Drive sign-in expired: ${detail}`);
+		this.name = "GoogleAuthExpiredError";
+	}
+}
+
 interface TokenResponse {
 	accessToken: string;
 	refreshToken: string;
@@ -85,8 +99,20 @@ export class GoogleDriveAuth {
 				client_secret: this.settings.clientSecret,
 				grant_type: "refresh_token",
 			}).toString(),
+			throw: false,
 		});
 
+		if (resp.status === 400 || resp.status === 401) {
+			let error = "";
+			try {
+				error = resp.json?.error ?? "";
+			} catch {
+				// non-JSON body, fall through to the generic error
+			}
+			if (error === "invalid_grant") {
+				throw new GoogleAuthExpiredError(resp.json?.error_description ?? error);
+			}
+		}
 		if (resp.status !== 200) {
 			throw new Error(`Token refresh failed: ${resp.text}`);
 		}

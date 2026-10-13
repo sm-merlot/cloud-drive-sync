@@ -12,7 +12,8 @@ import {
 import { CloudSyncSettingTab } from "./settings";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
 import { GoogleDriveApi } from "./providers/google-drive/google-drive-api";
-import { GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
+import { GoogleAuthExpiredError, GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
+import { GoogleDriveReauthModal } from "./providers/google-drive/google-drive-reauth-modal";
 import { GoogleDriveProvider } from "./providers/google-drive/google-drive-provider";
 import { ObsidianHttpClient } from "./http/obsidian-http-client";
 import { ObsidianLocalFileSystem } from "./fs/obsidian-local-fs";
@@ -39,6 +40,14 @@ export default class CloudSyncPlugin extends Plugin {
 	private pendingPaths: Set<string> = new Set();
 	private debounceTimer: number | null = null;
 	private currentStage = "";
+	// Set when Google rejects the refresh token. Automatic syncs stop until the
+	// user signs in again; a manual sync reopens the reconnect prompt.
+	googleAuthExpired = false;
+	private reauthModalOpen = false;
+	// True for the whole of a sync, including while it waits on a conflict,
+	// results or plan dialog. Without it the interval timer started another
+	// sync every few minutes and stacked a new dialog over the unanswered one.
+	private syncInFlight = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -102,7 +111,7 @@ export default class CloudSyncPlugin extends Plugin {
 		if (!leaf || !(leaf.view instanceof ItemView)) return;
 		this.mobileActionEl?.remove();
 		this.mobileActionEl = leaf.view.addAction("cloud", "Cloud Sync", () => this.runSync(true));
-		this.updateRibbon("idle");
+		this.updateRibbon(this.isGoogleAuthExpired() ? "error" : "idle");
 	}
 
 	private setupFileWatcher(): void {
@@ -160,12 +169,19 @@ export default class CloudSyncPlugin extends Plugin {
 	private async flushPendingSync(): Promise<void> {
 		if (this.pendingPaths.size === 0) return;
 
+		// Left queued; flushed when the running sync finishes.
+		if (this.syncInFlight) return;
+
 		const paths = new Set(this.pendingPaths);
 		this.pendingPaths.clear();
+
+		// The full sync after reconnecting picks up these paths.
+		if (this.isGoogleAuthExpired()) return;
 
 		const engine = this.getSyncEngine();
 		if (!engine) return;
 
+		this.syncInFlight = true;
 		this.updateStatusBar("syncing");
 		this.updateRibbon("syncing");
 		try {
@@ -173,9 +189,15 @@ export default class CloudSyncPlugin extends Plugin {
 			this.updateStatusBar("idle");
 			this.updateRibbon("idle");
 		} catch (e) {
+			if (e instanceof GoogleAuthExpiredError) {
+				this.handleGoogleAuthExpired(e);
+				return;
+			}
 			this.updateStatusBar("error");
 			this.updateRibbon("error");
 			console.error("File watcher sync failed:", e);
+		} finally {
+			this.syncFinished();
 		}
 	}
 
@@ -298,9 +320,20 @@ export default class CloudSyncPlugin extends Plugin {
 	}
 
 	async runSync(manual = false): Promise<void> {
+		if (this.isGoogleAuthExpired()) {
+			if (manual) this.promptGoogleReauth();
+			return;
+		}
+
+		if (this.syncInFlight) {
+			if (manual) new Notice("Sync already running. Finish any open sync dialog first.");
+			return;
+		}
+
 		const engine = this.getSyncEngine();
 		if (!engine) return;
 
+		this.syncInFlight = true;
 		engine.onProgress = () => {
 			this.currentStage = "syncing";
 			this.updateStatusBar("syncing");
@@ -325,13 +358,71 @@ export default class CloudSyncPlugin extends Plugin {
 				new Notice(parts.length > 0 ? `Sync: ${parts.join(", ")}` : "Everything up to date");
 			}
 		} catch (e) {
+			if (e instanceof GoogleAuthExpiredError) {
+				this.handleGoogleAuthExpired(e);
+				return;
+			}
 			this.currentStage = "idle";
 			this.updateStatusBar("error");
 			this.updateRibbon("error");
 			new Notice(
 				`Sync failed: ${e instanceof Error ? e.message : String(e)}`
 			);
+		} finally {
+			this.syncFinished();
 		}
+	}
+
+	private syncFinished(): void {
+		this.syncInFlight = false;
+		// Edits made while a dialog was open
+		if (this.pendingPaths.size > 0) this.flushPendingSync();
+	}
+
+	private isGoogleAuthExpired(): boolean {
+		return this.googleAuthExpired && this.settings.provider === "google-drive";
+	}
+
+	private handleGoogleAuthExpired(e: GoogleAuthExpiredError): void {
+		console.warn(e.message);
+		this.googleAuthExpired = true;
+		this.currentStage = "auth-expired";
+		this.updateStatusBar("error", "Reconnect Google Drive");
+		this.updateRibbon("error", "Cloud Sync · reconnect Google Drive");
+		this.promptGoogleReauth();
+	}
+
+	promptGoogleReauth(): void {
+		if (this.reauthModalOpen) return;
+		const modal = new GoogleDriveReauthModal(
+			this.app,
+			this.settings.googleDrive.clientId,
+			async (code) => {
+				await this.completeGoogleAuth(code);
+				new Notice("Reconnected to Google Drive");
+				this.runSync(true);
+			},
+			() => {
+				this.reauthModalOpen = false;
+			},
+		);
+		this.reauthModalOpen = true;
+		modal.open();
+	}
+
+	// Swaps in fresh tokens from an auth code. Leaves the sync folder and sync
+	// state alone, so it serves both first sign-in and reconnecting.
+	async completeGoogleAuth(code: string): Promise<void> {
+		const gd = this.settings.googleDrive;
+		const tokens = await GoogleDriveAuth.exchangeCode(code, gd.clientId, gd.clientSecret);
+		gd.accessToken = tokens.accessToken;
+		gd.refreshToken = tokens.refreshToken;
+		gd.tokenExpiry = Date.now() + tokens.expiresIn * 1000;
+		await this.saveSettings();
+		this.googleAuthExpired = false;
+		this.currentStage = "idle";
+		this.updateStatusBar("idle");
+		this.updateRibbon("idle");
 	}
 
 	async showFolderPicker(): Promise<void> {
@@ -354,7 +445,7 @@ export default class CloudSyncPlugin extends Plugin {
 		}
 	}
 
-	private updateRibbon(state: "idle" | "syncing" | "error"): void {
+	private updateRibbon(state: "idle" | "syncing" | "error", errorLabel?: string): void {
 		if (this.mobileActionEl) {
 			if (state === "syncing") {
 				setIcon(this.mobileActionEl, "refresh-cw");
@@ -383,7 +474,7 @@ export default class CloudSyncPlugin extends Plugin {
 			case "error":
 				setIcon(this.ribbonEl, "cloud-off");
 				this.ribbonEl.classList.remove("cloud-sync-ribbon-syncing");
-				this.ribbonEl.setAttribute("aria-label", "Cloud Sync · error");
+				this.ribbonEl.setAttribute("aria-label", errorLabel ?? "Cloud Sync · error");
 				break;
 		}
 	}
@@ -412,7 +503,7 @@ export default class CloudSyncPlugin extends Plugin {
 				break;
 			case "error":
 				setIcon(iconSpan, "cloud-off");
-				textSpan.setText("Sync error");
+				textSpan.setText(stageMsg ?? "Sync error");
 				this.statusBarEl.classList.remove("cloud-sync-syncing");
 				this.statusBarEl.classList.add("cloud-sync-error");
 				break;
