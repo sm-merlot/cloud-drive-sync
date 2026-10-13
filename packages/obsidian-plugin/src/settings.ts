@@ -344,16 +344,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 							return;
 						}
 						try {
-							const tokens = await GoogleDriveAuth.exchangeCode(
-								code,
-								gd.clientId,
-								gd.clientSecret
-							);
-							this.plugin.settings.googleDrive.accessToken = tokens.accessToken;
-							this.plugin.settings.googleDrive.refreshToken = tokens.refreshToken;
-							this.plugin.settings.googleDrive.tokenExpiry =
-								Date.now() + tokens.expiresIn * 1000;
-							await this.plugin.saveSettings();
+							await this.plugin.completeGoogleAuth(code);
 							new Notice("Authenticated successfully!");
 							this.display();
 						} catch (e) {
@@ -362,21 +353,34 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 					})
 				);
 		} else {
-			new Setting(containerEl)
+			const authSetting = new Setting(containerEl)
 				.setName("Authentication")
-				.setDesc("Connected to Google Drive")
-				.addButton((btn) =>
-					btn.setButtonText("Disconnect").onClick(async () => {
-						this.plugin.settings.googleDrive.accessToken = "";
-						this.plugin.settings.googleDrive.refreshToken = "";
-						this.plugin.settings.googleDrive.tokenExpiry = 0;
-						this.plugin.settings.googleDrive.rootFolderId = "";
-						this.plugin.settings.googleDrive.rootFolderName = "";
-						await this.plugin.saveSettings();
-						new Notice("Disconnected from Google Drive");
-						this.display();
-					})
+				.setDesc(
+					this.plugin.googleAuthExpired
+						? "Sign-in expired. Reconnect to resume syncing."
+						: "Connected to Google Drive"
 				);
+			if (this.plugin.googleAuthExpired) {
+				authSetting.addButton((btn) =>
+					btn
+						.setButtonText("Reconnect")
+						.setCta()
+						.onClick(() => this.plugin.promptGoogleReauth())
+				);
+			}
+			authSetting.addButton((btn) =>
+				btn.setButtonText("Disconnect").onClick(async () => {
+					this.plugin.settings.googleDrive.accessToken = "";
+					this.plugin.settings.googleDrive.refreshToken = "";
+					this.plugin.settings.googleDrive.tokenExpiry = 0;
+					this.plugin.settings.googleDrive.rootFolderId = "";
+					this.plugin.settings.googleDrive.rootFolderName = "";
+					this.plugin.googleAuthExpired = false;
+					await this.plugin.saveSettings();
+					new Notice("Disconnected from Google Drive");
+					this.display();
+				})
+			);
 
 			// Folder selection
 			const folderDesc = gd.rootFolderId
