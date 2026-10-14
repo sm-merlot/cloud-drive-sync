@@ -23,6 +23,15 @@ export class GoogleDriveProvider implements CloudProvider {
 
 	async listAllFiles(): Promise<RemoteFileInfo[]> {
 		this.folderIdCache.clear();
+		// Under drive.file a folder the app did not create lists as empty, not
+		// as an error, and an empty remote with sync history reads as "everything
+		// was deleted remotely" and deletes the local copies. Refuse instead.
+		const root = await this.api.getFolder(this.rootFolderId);
+		if (!root || root.trashed) {
+			throw new Error(
+				"Sync folder is no longer available. Choose a sync folder in Cloud Sync settings."
+			);
+		}
 		const files = await this.api.listAllFilesRecursive(this.rootFolderId);
 		// Build folder cache from folder entries and file parent paths
 		for (const f of files) {

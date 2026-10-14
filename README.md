@@ -6,7 +6,7 @@ A personal-use Obsidian plugin that provides two-way sync between your vault and
 
 ## Features
 
-- **Two-way sync** between your Obsidian vault and a chosen Google Drive folder
+- **Two-way sync** between your Obsidian vault and a Google Drive folder the plugin creates under `Cloud Drive Sync/` in My Drive
 - **Cross-platform** — works on desktop, Android, and iOS/iPadOS
 - **Automatic sync** — syncs on file change (5s debounce), on a configurable interval, and/or on startup
 - **Manual sync** — ribbon icon and command palette action
@@ -40,9 +40,9 @@ A personal-use Obsidian plugin that provides two-way sync between your vault and
 1. Go to **APIs & Services** > **OAuth consent screen** (or **Auth** > **Branding** in the new UI)
 2. Set User Type to **External**
 3. Fill in the required fields (app name, user support email)
-4. Under **Scopes** (or **Data Access** in new UI), add: `https://www.googleapis.com/auth/drive`
+4. Under **Scopes** (or **Data Access** in new UI), add: `https://www.googleapis.com/auth/drive.file`
 5. Under **Audience** (or **Test users**), add your Google email address
-6. Save — the app will be in "Testing" status, which is fine for personal use
+6. Under **Audience**, click **Publish app** to move it to "In production". `drive.file` is not a sensitive or restricted scope, so this needs no Google review. Left in "Testing", Google expires the sign-in every 7 days
 
 ### 3. Create OAuth Credentials
 
@@ -117,7 +117,7 @@ The `.obsidian` folder is hidden by default. You'll need a third-party file mana
 5. Sign in and authorize the app
 6. Copy the authorization code from the redirect page
 7. Paste the code into the **Auth code** field and click **Submit**
-8. Click **Choose Folder** to select which Google Drive folder to sync with
+8. Click **Choose** next to Sync folder and create a folder for this vault, or select one another device already created. The plugin only sees files it created itself (`drive.file`), so files added to the folder through the Drive website or the Drive desktop app are not synced
 9. Configure sync interval, startup sync, and exclude patterns as desired
 
 ## Self-Updating

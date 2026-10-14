@@ -5,6 +5,14 @@ const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 
+// The plugin only holds the drive.file scope, so it can see nothing in Drive
+// but what it created. Everything lives under one folder it makes for itself,
+// found again on any device by a private appProperties marker: Drive hides
+// appProperties from its UI and keeps them through renames and moves.
+export const APP_FOLDER_NAME = "Cloud Drive Sync";
+const APP_FOLDER_MARKER_KEY = "cloudDriveSync";
+const APP_FOLDER_MARKER_VALUE = "app";
+
 interface DriveFile {
 	id: string;
 	name: string;
@@ -77,6 +85,52 @@ export class GoogleDriveApi {
 		}
 
 		return resp.json.files;
+	}
+
+	// Null when the folder is gone or not visible to this app, which under
+	// drive.file includes any folder the app did not create.
+	async getFolder(folderId: string): Promise<{ id: string; name: string; trashed: boolean } | null> {
+		const params = new URLSearchParams({ fields: "id,name,trashed" });
+		const resp = await requestUrl({
+			url: `${DRIVE_API}/files/${folderId}?${params.toString()}`,
+			headers: await this.headers(),
+			throw: false,
+		});
+
+		if (resp.status === 404 || resp.status === 403) return null;
+		if (resp.status !== 200) {
+			throw new Error(`Drive get folder failed (${resp.status}): ${resp.text}`);
+		}
+
+		return resp.json;
+	}
+
+	// The marked app folder in My Drive, created on first use. Oldest first, so
+	// two devices that each created one before syncing settle on the same one.
+	async ensureAppFolder(): Promise<string> {
+		const params = new URLSearchParams({
+			q: `appProperties has { key='${APP_FOLDER_MARKER_KEY}' and value='${APP_FOLDER_MARKER_VALUE}' } and mimeType='${FOLDER_MIME}' and trashed=false and 'me' in owners`,
+			fields: "files(id)",
+			orderBy: "createdTime",
+			pageSize: "1",
+			spaces: "drive",
+		});
+
+		const resp = await requestUrl({
+			url: `${DRIVE_API}/files?${params.toString()}`,
+			headers: await this.headers(),
+		});
+
+		if (resp.status !== 200) {
+			throw new Error(`Drive find app folder failed (${resp.status}): ${resp.text}`);
+		}
+
+		const existing = (resp.json as DriveListResponse).files[0];
+		if (existing) return existing.id;
+
+		return this.createFolder("root", APP_FOLDER_NAME, {
+			[APP_FOLDER_MARKER_KEY]: APP_FOLDER_MARKER_VALUE,
+		});
 	}
 
 	async listAllFilesRecursive(rootFolderId: string): Promise<RemoteFileInfo[]> {
@@ -202,7 +256,11 @@ export class GoogleDriveApi {
 		}
 	}
 
-	async createFolder(parentId: string, name: string): Promise<string> {
+	async createFolder(
+		parentId: string,
+		name: string,
+		appProperties?: Record<string, string>
+	): Promise<string> {
 		const resp = await requestUrl({
 			url: `${DRIVE_API}/files`,
 			method: "POST",
@@ -214,6 +272,7 @@ export class GoogleDriveApi {
 				name,
 				mimeType: FOLDER_MIME,
 				parents: [parentId],
+				...(appProperties && { appProperties }),
 			}),
 		});
 

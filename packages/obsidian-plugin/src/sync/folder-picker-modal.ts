@@ -1,66 +1,55 @@
 import { App, Modal, Setting } from "obsidian";
-import type { GoogleDriveApi } from "../providers/google-drive/google-drive-api";
+import { APP_FOLDER_NAME } from "../providers/google-drive/google-drive-api";
 
 interface FolderItem {
 	id: string;
 	name: string;
 }
 
-export class FolderPickerModal extends Modal {
-	private api: GoogleDriveApi;
-	private folders: FolderItem[];
-	private resolvePromise: ((value: FolderItem | null) => void) | null = null;
+export type FolderChoice = FolderItem | { create: string };
 
-	constructor(app: App, api: GoogleDriveApi, folders: FolderItem[]) {
+// Picks a vault folder inside the plugin's app folder. drive.file only shows
+// the plugin folders it created itself, so there is nothing else to browse.
+export class FolderPickerModal extends Modal {
+	private folders: FolderItem[];
+	private newName: string;
+	private resolvePromise: ((value: FolderChoice | null) => void) | null = null;
+
+	constructor(app: App, folders: FolderItem[], newName: string) {
 		super(app);
-		this.api = api;
 		this.folders = folders;
+		this.newName = newName;
 	}
 
 	onOpen(): void {
-		this.renderFolders(this.folders, "My Drive");
-	}
-
-	private renderFolders(folders: FolderItem[], title: string): void {
 		const { contentEl } = this;
 		contentEl.empty();
 
-		contentEl.createEl("h2", { text: `Select Sync Folder` });
+		contentEl.createEl("h2", { text: "Select Sync Folder" });
 		contentEl.createEl("p", {
-			text: `Browsing: ${title}`,
+			text: `Vaults sync to folders inside "${APP_FOLDER_NAME}" in My Drive. Files added there outside this plugin are not synced.`,
 			cls: "cloud-sync-folder-path",
 		});
 
-		if (folders.length === 0) {
-			contentEl.createEl("p", { text: "No folders found" });
+		for (const folder of this.folders) {
+			new Setting(contentEl).setName(folder.name).addButton((btn) =>
+				btn.setButtonText("Select").onClick(() => this.resolve(folder))
+			);
 		}
 
-		for (const folder of folders) {
+		if (!this.folders.some((f) => f.name === this.newName)) {
 			new Setting(contentEl)
-				.setName(folder.name)
+				.setName(`New folder: ${this.newName}`)
 				.addButton((btn) =>
-					btn.setButtonText("Select").setCta().onClick(() => {
-						this.resolve(folder);
-					})
-				)
-				.addButton((btn) =>
-					btn.setButtonText("Browse").onClick(async () => {
-						try {
-							const subfolders = await this.api.listFolders(folder.id);
-							this.renderFolders(subfolders, folder.name);
-						} catch (e) {
-							contentEl.createEl("p", {
-								text: `Error: ${e instanceof Error ? e.message : String(e)}`,
-							});
-						}
-					})
+					btn
+						.setButtonText("Create")
+						.setCta()
+						.onClick(() => this.resolve({ create: this.newName }))
 				);
 		}
 
 		new Setting(contentEl).addButton((btn) =>
-			btn.setButtonText("Cancel").onClick(() => {
-				this.resolve(null);
-			})
+			btn.setButtonText("Cancel").onClick(() => this.resolve(null))
 		);
 	}
 
@@ -72,15 +61,15 @@ export class FolderPickerModal extends Modal {
 		this.contentEl.empty();
 	}
 
-	private resolve(folder: FolderItem | null): void {
+	private resolve(choice: FolderChoice | null): void {
 		if (this.resolvePromise) {
-			this.resolvePromise(folder);
+			this.resolvePromise(choice);
 			this.resolvePromise = null;
 		}
 		this.close();
 	}
 
-	openAndWait(): Promise<FolderItem | null> {
+	openAndWait(): Promise<FolderChoice | null> {
 		return new Promise((resolve) => {
 			this.resolvePromise = resolve;
 			this.open();

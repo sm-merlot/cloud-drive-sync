@@ -433,16 +433,30 @@ export default class CloudSyncPlugin extends Plugin {
 		});
 		const api = new GoogleDriveApi(() => auth.ensureValidToken());
 
-		const folders = await api.listFolders("root");
-		const modal = new FolderPickerModal(this.app, api, folders);
-		const chosen = await modal.openAndWait();
+		const appFolderId = await api.ensureAppFolder();
+		const folders = await api.listFolders(appFolderId);
+		const modal = new FolderPickerModal(this.app, folders, this.app.vault.getName());
+		const choice = await modal.openAndWait();
+		if (!choice) return;
 
-		if (chosen) {
-			this.settings.googleDrive.rootFolderId = chosen.id;
-			this.settings.googleDrive.rootFolderName = chosen.name;
-			await this.saveSettings();
-			new Notice(`Sync folder set to: ${chosen.name}`);
+		const chosen =
+			"create" in choice
+				? { id: await api.createFolder(appFolderId, choice.create), name: choice.create }
+				: choice;
+
+		if (chosen.id !== gd.rootFolderId) {
+			// Sync history records remote ids in the old folder. Kept, every file
+			// would look deleted remotely and be deleted locally; cleared, the
+			// next sync is a first sync and asks which side wins.
+			const state = this.settings.syncState;
+			state.files = {};
+			state.lastSyncTime = 0;
+			delete state.remoteChangeToken;
 		}
+		gd.rootFolderId = chosen.id;
+		gd.rootFolderName = chosen.name;
+		await this.saveSettings();
+		new Notice(`Sync folder set to: ${chosen.name}`);
 	}
 
 	private updateRibbon(state: "idle" | "syncing" | "error", errorLabel?: string): void {
