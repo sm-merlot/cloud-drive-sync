@@ -136,7 +136,9 @@ export class SyncEngine {
 				} catch (e) {
 					const msg = e instanceof Error ? e.message : String(e);
 					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
-					result.failures.push({ vaultPath: action.vaultPath, type: "error", errorMessage: msg });
+					const issue: SyncIssue = { vaultPath: action.vaultPath, type: "error", errorMessage: msg };
+					issues.push(issue);
+					result.failures.push(issue);
 					result.errors++;
 				}
 			}
@@ -181,7 +183,9 @@ export class SyncEngine {
 				} catch (e) {
 					const msg = e instanceof Error ? e.message : String(e);
 					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
-					result.failures.push({ vaultPath: action.vaultPath, type: "error", errorMessage: msg });
+					const issue: SyncIssue = { vaultPath: action.vaultPath, type: "error", errorMessage: msg };
+					issues.push(issue);
+					result.failures.push(issue);
 					result.errors++;
 				}
 			}
@@ -246,6 +250,8 @@ export class SyncEngine {
 			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
 			const relevantFolderActions = folderActions.filter(a => folderPaths.has(a.vaultPath));
 
+			const issues: SyncIssue[] = [];
+
 			// Phase 1: folder creates
 			const folderCreates = relevantFolderActions
 				.filter(a => a.type === "create-folder-remote" || a.type === "create-folder-local")
@@ -258,7 +264,9 @@ export class SyncEngine {
 				} catch (e) {
 					const msg = e instanceof Error ? e.message : String(e);
 					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
-					result.failures.push({ vaultPath: action.vaultPath, type: "error", errorMessage: msg });
+					const issue: SyncIssue = { vaultPath: action.vaultPath, type: "error", errorMessage: msg };
+					issues.push(issue);
+					result.failures.push(issue);
 					result.errors++;
 				}
 			}
@@ -279,7 +287,7 @@ export class SyncEngine {
 				);
 			}
 
-			const issues: SyncIssue[] = [...preIssues];
+			issues.push(...preIssues);
 
 			for (const action of actions) {
 				if (action.type === "conflict") continue;
@@ -313,7 +321,9 @@ export class SyncEngine {
 				} catch (e) {
 					const msg = e instanceof Error ? e.message : String(e);
 					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
-					result.failures.push({ vaultPath: action.vaultPath, type: "error", errorMessage: msg });
+					const issue: SyncIssue = { vaultPath: action.vaultPath, type: "error", errorMessage: msg };
+					issues.push(issue);
+					result.failures.push(issue);
 					result.errors++;
 				}
 			}
@@ -841,11 +851,14 @@ export class SyncEngine {
 			case "create-folder-remote": {
 				const parentPath = getParentPath(action.vaultPath);
 				const folderName = getFileName(action.vaultPath);
-				const folderId = await this.provider.createFolder(parentPath, folderName);
+				// Providers take a folder id, not a path. They coincide on S3; on
+				// Google Drive passing the path made every folder create fail.
+				const parentId = await this.provider.getRemoteFolderId(parentPath);
+				const folderId = await this.provider.createFolder(parentId, folderName);
 				this.stateStore.setRecord(action.vaultPath, {
 					vaultPath: action.vaultPath,
 					remoteId: folderId,
-					remoteFolderId: parentPath,
+					remoteFolderId: parentId,
 					localModTime: Date.now(),
 					remoteModTime: Date.now(),
 					contentHash: FOLDER_SENTINEL,
