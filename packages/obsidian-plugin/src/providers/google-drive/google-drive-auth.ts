@@ -4,7 +4,9 @@ import type { GoogleDriveSettings } from "@cloud-drive-sync/core";
 const REDIRECT_URI = "https://cloud-drive-sync.pages.dev/";
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const SCOPE = "https://www.googleapis.com/auth/drive";
+// drive.file sees only files this app created, which keeps the consent screen
+// free of Google's restricted-scope review. See ensureAppFolder.
+const SCOPE = "https://www.googleapis.com/auth/drive.file";
 
 /**
  * Thrown when Google rejects the stored refresh token (`invalid_grant`): it

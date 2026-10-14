@@ -385,13 +385,13 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 			// Folder selection
 			const folderDesc = gd.rootFolderId
 				? `Current: ${gd.rootFolderName || gd.rootFolderId}`
-				: "No folder selected";
+				: "No folder selected. Choose creates one for this vault.";
 
 			new Setting(containerEl)
 				.setName("Sync folder")
 				.setDesc(folderDesc)
 				.addButton((btn) =>
-					btn.setButtonText("Choose Folder").onClick(async () => {
+					btn.setButtonText("Choose").onClick(async () => {
 						try {
 							await this.plugin.showFolderPicker();
 							this.display();
