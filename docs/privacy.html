@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud Drive Sync Privacy Policy</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            line-height: 1.6;
+            margin: 0;
+            padding: 40px 16px;
+        }
+        main { max-width: 720px; margin: 0 auto; }
+        h1 { color: #cba6f7; margin-bottom: 4px; }
+        h2 { color: #cba6f7; font-size: 1.15rem; margin-top: 32px; }
+        .updated { color: #a6adc8; margin-top: 0; }
+        a { color: #cba6f7; }
+        code { background: #313244; padding: 1px 6px; border-radius: 4px; }
+        dt { font-weight: 600; margin-top: 8px; }
+        dd { margin-left: 20px; color: #bac2de; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Privacy Policy</h1>
+    <p class="updated">Cloud Drive Sync · Last updated 14 October 2026</p>
+
+    <p>Cloud Drive Sync is an open source Obsidian plugin that keeps a vault in sync with Google Drive or with S3 compatible storage. This policy explains what the plugin does with your information, and in particular what it does with data from your Google Account.</p>
+
+    <h2>The short version</h2>
+    <p>Cloud Drive Sync has no server. Your notes travel directly between your device and storage you control. Nothing is sent to the developer, and the plugin contains no analytics, tracking or crash reporting.</p>
+
+    <h2>Google Account data</h2>
+    <p>If you connect Google Drive, the plugin requests one permission and no others:</p>
+    <dl>
+        <dt><code>drive.file</code></dt>
+        <dd>Lets the plugin create and manage only the files it creates itself. It cannot see, open or list anything else in your Drive.</dd>
+    </dl>
+    <p>On first use the plugin creates a folder called <em>Obsidian Vaults (Cloud Drive Sync)</em> in your Drive, and each vault you sync gets a folder inside it. You can rename or move that folder in Drive. Because of the narrow permission above, files you add to it yourself are not visible to the plugin.</p>
+
+    <h2>How the data is used</h2>
+    <p>Only to sync your vault: listing, uploading, downloading and deleting the files the plugin manages in its own folder. There is no other purpose.</p>
+    <ul>
+        <li>It is not sold, rented or traded.</li>
+        <li>It is not shared with any third party, because the developer never receives it.</li>
+        <li>It is not used for advertising or profiling.</li>
+        <li>It is not used to train machine learning models.</li>
+    </ul>
+    <p>Google user data obtained through the permission above is used only to provide the sync feature you turned on, and is never transferred to anyone else except as required by law. Cloud Drive Sync complies with the <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API Services User Data Policy</a>, including its Limited Use requirements.</p>
+
+    <h2>What is stored on your device</h2>
+    <p>The plugin keeps its settings in Obsidian's plugin data file, <code>.obsidian/plugins/cloud-drive-sync/data.json</code> inside your vault. That includes your Google sign-in tokens or S3 credentials, the sync folder, and a record of the last sync. The file is stored as plain text, as Obsidian stores all plugin settings. The plugin never syncs it, but another sync or backup tool that copies your <code>.obsidian</code> folder would copy it too.</p>
+
+    <h2>Who the plugin talks to</h2>
+    <ul>
+        <li><strong>Google</strong>, to sign you in and to read and write the files the plugin created in your Drive. Only once you connect Google Drive.</li>
+        <li><strong>Your own S3 endpoint</strong>, if you configure one. You choose the address.</li>
+        <li><strong>This website</strong>, once, during Google sign-in. Google sends your browser to <code>cloud-drive-sync.pages.dev</code> with a one-time authorization code in the address, and the page shows it so you can paste it into Obsidian. The page is static, stores nothing, and sends the code nowhere. The code expires within minutes, can be used only once, and is useless without your own OAuth client secret.</li>
+    </ul>
+    <p>There is no server operated by the developer that receives your notes or your account information.</p>
+
+    <h2>Removing access</h2>
+    <ul>
+        <li>Revoke access at <a href="https://myaccount.google.com/permissions" rel="noopener">myaccount.google.com/permissions</a>. The plugin immediately loses all access to your Drive.</li>
+        <li>Delete the <em>Obsidian Vaults (Cloud Drive Sync)</em> folder in your Drive if you also want the synced copies gone. Revoking access alone does not delete them.</li>
+        <li>Click Disconnect in the plugin's settings, or uninstall the plugin, to clear the tokens stored on your device.</li>
+    </ul>
+
+    <h2>Children</h2>
+    <p>Cloud Drive Sync is not directed at children under 13 and does not knowingly collect information from them. It collects no personal information from anyone.</p>
+
+    <h2>Changes</h2>
+    <p>If this policy changes, the date at the top changes with it. The full history is in the <a href="https://github.com/sm-merlot/cloud-drive-sync/commits/main/docs/privacy.html">repository</a>.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about this policy or the plugin can go to <a href="https://github.com/sm-merlot/cloud-drive-sync/issues">GitHub issues</a>.</p>
+</main>
+</body>
+</html>
