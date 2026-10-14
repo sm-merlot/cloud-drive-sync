@@ -8,8 +8,9 @@ const FOLDER_MIME = "application/vnd.google-apps.folder";
 // The plugin only holds the drive.file scope, so it can see nothing in Drive
 // but what it created. Everything lives under one folder it makes for itself,
 // found again on any device by a private appProperties marker: Drive hides
-// appProperties from its UI and keeps them through renames and moves.
-export const APP_FOLDER_NAME = "Cloud Drive Sync";
+// appProperties from its UI and keeps them through renames and moves, so the
+// user can rename or move the folder freely.
+export const APP_FOLDER_NAME = "Obsidian Vaults (Cloud Drive Sync)";
 const APP_FOLDER_MARKER_KEY = "cloudDriveSync";
 const APP_FOLDER_MARKER_VALUE = "app";
 

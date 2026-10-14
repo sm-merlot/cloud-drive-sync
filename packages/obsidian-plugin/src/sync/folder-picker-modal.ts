@@ -37,16 +37,33 @@ export class FolderPickerModal extends Modal {
 			);
 		}
 
-		if (!this.folders.some((f) => f.name === this.newName)) {
-			new Setting(contentEl)
-				.setName(`New folder: ${this.newName}`)
-				.addButton((btn) =>
-					btn
-						.setButtonText("Create")
-						.setCta()
-						.onClick(() => this.resolve({ create: this.newName }))
-				);
-		}
+		let name = this.newName;
+		const createSetting = new Setting(contentEl)
+			.setName("New folder")
+			.setDesc("Defaults to this vault's name")
+			.addText((text) =>
+				text.setValue(name).onChange((value) => {
+					name = value.trim();
+				})
+			)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Create")
+					.setCta()
+					.onClick(() => {
+						if (!name || /[/\\]/.test(name)) {
+							createSetting.setDesc("Enter a folder name without slashes");
+							return;
+						}
+						// Two vaults sharing a folder merge their files on first
+						// sync, so a taken name has to be a deliberate Select.
+						if (this.folders.some((f) => f.name === name)) {
+							createSetting.setDesc(`"${name}" already exists. Select it above to join it, or pick another name.`);
+							return;
+						}
+						this.resolve({ create: name });
+					})
+			);
 
 		new Setting(contentEl).addButton((btn) =>
 			btn.setButtonText("Cancel").onClick(() => this.resolve(null))
