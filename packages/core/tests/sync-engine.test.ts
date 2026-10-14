@@ -385,6 +385,34 @@ describe("SyncEngine first sync + folders", () => {
 		expect(store.getRecord("Audio")?.contentHash).toBe("__folder__");
 	});
 
+	it("creates a nested remote folder under the parent's id, not its path", async () => {
+		// Google Drive ids are opaque, unlike the fake's path-shaped ones
+		const ids = new Map<string, string>([["", "root-id"], ["Work", "work-id"]]);
+		const parents: string[] = [];
+		provider.getRemoteFolderId = async (p) => ids.get(p) ?? `${p}-id`;
+		provider.createFolder = async (parentId, name) => {
+			parents.push(parentId);
+			return `${name}-id`;
+		};
+		fs.folders.add("Work");
+		fs.folders.add("Work/Projects");
+		const { store } = makeState();
+		await makeEngine(fs, provider, store, ui).sync();
+		expect(parents).toEqual(["root-id", "work-id"]);
+		expect(store.getRecord("Work/Projects")?.remoteFolderId).toBe("work-id");
+	});
+
+	it("surfaces a failed folder create in the issues dialog", async () => {
+		provider.createFolder = async () => { throw new Error("Drive create folder failed (404)"); };
+		fs.folders.add("Audio");
+		const { store } = makeState();
+		const result = await makeEngine(fs, provider, store, ui).sync();
+		expect(result.errors).toBe(1);
+		expect(ui.surfacedIssues).toEqual([
+			expect.objectContaining({ vaultPath: "Audio", type: "error", errorMessage: "Drive create folder failed (404)" }),
+		]);
+	});
+
 	it("creates a local folder for a new remote folder", async () => {
 		provider.folders.add("Docs");
 		const { store } = makeState();
