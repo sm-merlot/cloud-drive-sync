@@ -180,14 +180,13 @@ Bulk actions ("All Local", "All Remote") are available at the top.
 
 The OAuth redirect page lives at `docs/index.html` and is hosted on **Cloudflare Pages** at `https://cloud-drive-sync.pages.dev/`, beside the privacy policy at `docs/privacy.html`.
 
-It receives the `?code=` parameter from Google after the user authorises the app, displays it, and auto-copies it to the clipboard so the user can paste it back into Obsidian. Opened without a code, it shows a short homepage instead. Use `https://cloud-drive-sync.pages.dev/` as the consent screen's homepage and `https://cloud-drive-sync.pages.dev/privacy.html` as its privacy policy link.
+It receives the `?code=` parameter from Google after the user authorises the app, displays it, and auto-copies it to the clipboard so the user can paste it back into Obsidian. Opened without a code, it shows a short homepage instead. Use `https://cloud-drive-sync.pages.dev/` as the consent screen's homepage and `https://cloud-drive-sync.pages.dev/privacy` as its privacy policy link (Pages serves `privacy.html` there).
 
 ### Updating the redirect page
 
-1. Edit `docs/index.html`
-2. Go to [Cloudflare Pages](https://dash.cloudflare.com/) → **Workers & Pages** → **cloud-drive-sync**
-3. **Deployments** → **Upload assets** (or push to the connected Git branch if using Git deploy)
-4. Upload the whole `docs/` folder
+The Pages project is linked to this repo and serves `docs/`, so any push to `main` redeploys it. Check the commit's **Cloudflare Pages** check to see whether the deploy worked.
+
+If pushes stop deploying (as happened after the repo moved from `scme0/` to `sm-merlot/`), make sure the repo shown under the project's **Settings → Build** is `sm-merlot/cloud-drive-sync`, and that the Cloudflare Workers and Pages GitHub app has access to it.
 
 ### Changing the redirect URI
 
