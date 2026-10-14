@@ -58,6 +58,7 @@
         .btn:active { opacity: 0.7; }
         .copied { color: #a6e3a1; margin-top: 12px; font-size: 0.9rem; }
         .error { color: #f38ba8; }
+        a { color: #cba6f7; }
         .instructions {
             margin-top: 20px;
             color: #a6adc8;
@@ -67,7 +68,15 @@
     </style>
 </head>
 <body>
-    <div class="card">
+    <div class="card" id="home" style="display:none">
+        <h1>Cloud Drive Sync</h1>
+        <p class="subtitle">Two-way sync between an Obsidian vault and Google Drive or S3 compatible storage</p>
+        <div class="instructions">
+            <p>An open source Obsidian plugin with no server of its own. Your notes go straight from your device to storage you control.</p>
+            <p style="margin-top:16px"><a href="https://github.com/sm-merlot/cloud-drive-sync">Source and setup</a> · <a href="privacy.html">Privacy policy</a></p>
+        </div>
+    </div>
+    <div class="card" id="auth">
         <h1>Cloud Sync Authorization</h1>
         <p class="subtitle">Copy this code back into Obsidian</p>
         <div class="code-box" id="codeDisplay">Loading...</div>
@@ -116,8 +125,10 @@
                 });
             });
         } else {
-            codeDisplay.textContent = 'No authorization code found';
-            codeDisplay.classList.add('error');
+            // Opened directly rather than as Google's redirect: act as the homepage.
+            document.getElementById('auth').style.display = 'none';
+            document.getElementById('home').style.display = 'block';
+            document.title = 'Cloud Drive Sync';
         }
     </script>
 </body>

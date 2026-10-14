@@ -178,16 +178,16 @@ Bulk actions ("All Local", "All Remote") are available at the top.
 
 ## OAuth Redirect Page
 
-The OAuth redirect page lives at `docs/index.html` and is hosted on **Cloudflare Pages** at `https://cloud-drive-sync.pages.dev/`.
+The OAuth redirect page lives at `docs/index.html` and is hosted on **Cloudflare Pages** at `https://cloud-drive-sync.pages.dev/`, beside the privacy policy at `docs/privacy.html`.
 
-It receives the `?code=` parameter from Google after the user authorises the app, displays it, and auto-copies it to the clipboard so the user can paste it back into Obsidian.
+It receives the `?code=` parameter from Google after the user authorises the app, displays it, and auto-copies it to the clipboard so the user can paste it back into Obsidian. Opened without a code, it shows a short homepage instead. Use `https://cloud-drive-sync.pages.dev/` as the consent screen's homepage and `https://cloud-drive-sync.pages.dev/privacy.html` as its privacy policy link.
 
 ### Updating the redirect page
 
 1. Edit `docs/index.html`
 2. Go to [Cloudflare Pages](https://dash.cloudflare.com/) → **Workers & Pages** → **cloud-drive-sync**
 3. **Deployments** → **Upload assets** (or push to the connected Git branch if using Git deploy)
-4. Upload the updated `docs/index.html`
+4. Upload the whole `docs/` folder
 
 ### Changing the redirect URI
 
