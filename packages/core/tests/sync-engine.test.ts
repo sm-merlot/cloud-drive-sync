@@ -429,3 +429,66 @@ describe("SyncEngine first sync + folders", () => {
 		expect(provider.folders.has("Old")).toBe(false);
 	});
 });
+
+// DEV-33: a newer local mtime with unchanged bytes (Obsidian's cached
+// TFile.stat refreshing late, or a file touched outside Obsidian) must not
+// count as a local edit.
+describe("SyncEngine stale local mtime", () => {
+	let fs: FakeLocalFs;
+	let provider: FakeProvider;
+	let ui: FakeUI;
+
+	beforeEach(() => {
+		fs = new FakeLocalFs();
+		provider = new FakeProvider();
+		ui = new FakeUI();
+	});
+
+	it("does not re-upload a file whose bytes match the record", async () => {
+		fs.setFile("a.md", "v1", 5000);
+		provider.setObject("a.md", "v1", 1000);
+		const { store } = makeState([record("a.md")]);
+		const engine = makeEngine(fs, provider, store, ui);
+
+		const first = await engine.sync();
+		expect(first.uploaded).toBe(0);
+		expect(store.getRecord("a.md")?.localModTime).toBe(5000);
+
+		const readsAfterFirst = fs.readFileCalls;
+		const second = await engine.sync();
+		expect(second.uploaded).toBe(0);
+		expect(fs.readFileCalls).toBe(readsAfterFirst); // healed: no re-hash
+	});
+
+	it("deletes locally, not re-uploads, when the file was moved or deleted on the server", async () => {
+		fs.setFile("old/a.md", "v1", 5000);
+		provider.setObject("new/a.md", "v1", 3000);
+		const { store } = makeState([record("old/a.md")]);
+		const result = await makeEngine(fs, provider, store, ui).sync();
+
+		expect(provider.objects.has("old/a.md")).toBe(false);
+		expect(fs.files.has("old/a.md")).toBe(false);
+		expect(fs.files.has("new/a.md")).toBe(true);
+		expect(result.uploaded).toBe(0);
+	});
+
+	it("takes a remote edit instead of raising a conflict", async () => {
+		fs.setFile("a.md", "v1", 5000);
+		provider.setObject("a.md", "v2 from server", 3000);
+		const { store } = makeState([record("a.md")]);
+		const result = await makeEngine(fs, provider, store, ui).sync();
+
+		expect(result.downloaded).toBe(1);
+		expect(result.uploaded).toBe(0);
+		expect(ui.surfacedIssues).toHaveLength(0);
+		expect(new TextDecoder().decode(fs.files.get("a.md")!.bytes)).toBe("v2 from server");
+	});
+
+	it("still uploads a same-size edit", async () => {
+		fs.setFile("a.md", "v2", 5000);
+		provider.setObject("a.md", "v1", 1000);
+		const { store } = makeState([record("a.md")]);
+		const result = await makeEngine(fs, provider, store, ui).sync();
+		expect(result.uploaded).toBe(1);
+	});
+});
