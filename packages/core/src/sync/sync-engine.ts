@@ -100,6 +100,7 @@ export class SyncEngine {
 
 			// 3. Compute actions
 			this.progress("Planning...");
+			await this.healStaleLocalModTimes(localMap);
 			const preIssues: SyncIssue[] = [];
 			const actions = this.computeActions(localMap, remoteMap, preIssues);
 			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
@@ -357,6 +358,31 @@ export class SyncEngine {
 		const mtimeChanged = local.mtimeMs > record.localModTime;
 		const sizeChanged = record.size !== undefined && local.size !== record.size;
 		return mtimeChanged || sizeChanged;
+	}
+
+	// A local mtime newer than the record does not prove an edit. Obsidian's
+	// cached TFile.stat can refresh after we stamp the record, and a file
+	// moved or rewritten outside Obsidian can get a new mtime with the same
+	// bytes. Trusting mtime alone re-uploads unchanged files forever, and
+	// brings back files deleted or moved on the server (the "edited here,
+	// deleted there" branch). When the size matches, hash the file. If the
+	// bytes match the record, move the record's mtime forward so every
+	// branch of classifyPath sees the file as unchanged.
+	private async healStaleLocalModTimes(localMap: Map<string, LocalFileEntry>): Promise<void> {
+		for (const [path, local] of localMap) {
+			const record = this.stateStore.getRecord(path);
+			if (!record || record.contentHash === FOLDER_SENTINEL) continue;
+			if (local.mtimeMs <= record.localModTime) continue;
+			if (record.size !== undefined && local.size !== record.size) continue;
+			if (local.size >= HASH_VERIFY_THRESHOLD_BYTES) continue;
+
+			const bytes = await this.fs.readFile(this.root, path);
+			if (computeMD5(toArrayBuffer(bytes)) !== record.contentHash) continue;
+
+			record.localModTime = local.mtimeMs;
+			record.size = bytes.byteLength;
+			this.stateStore.setRecord(path, record);
+		}
 	}
 
 	private remoteChanged(remote: RemoteFileInfo, record: { remoteModTime: number; contentHash: string }): boolean {
