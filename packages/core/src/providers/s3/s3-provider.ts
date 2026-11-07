@@ -43,6 +43,16 @@ export class S3Provider implements CloudProvider {
 			// Skip .keep placeholders — they exist only to anchor empty folders in S3
 			if (name === ".keep") continue;
 
+			// Keys ending in "/" are directory markers (rclone `serve s3` lists
+			// every empty directory this way). The folder itself was synthesized
+			// above; treating the marker as a file makes the engine try to
+			// download a nameless file onto the folder path on every sync.
+			if (key.endsWith("/")) {
+				const folderPath = key.replace(/\/+$/, "");
+				if (folderPath) this.addSyntheticFolders(`${folderPath}/.keep`, seenFolders, files);
+				continue;
+			}
+
 			files.push({
 				id: key,
 				name,
