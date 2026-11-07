@@ -193,3 +193,19 @@ describe("S3Provider multipart orchestration", () => {
 		expect(abortCalled).toBe(true);
 	});
 });
+
+describe("S3Provider listing", () => {
+	it("treats keys ending in '/' as folders, not files", async () => {
+		const provider = new S3Provider({ ...CFG, endpoint: "https://h.example" }, new FakeHttpClient());
+		(provider as unknown as { api: { listAllObjects: () => Promise<unknown[]> } }).api.listAllObjects = async () => [
+			{ key: "Tax/2025/empty/", lastModified: 0, etag: "" },
+			{ key: "Tax/2025/report.pdf", lastModified: 1, etag: "e" },
+		];
+		const all = await provider.listAllFiles();
+		const files = all.filter((f) => !f.isFolder).map((f) => f.path);
+		const folders = all.filter((f) => f.isFolder).map((f) => f.path).sort();
+		expect(files).toEqual(["Tax/2025/report.pdf"]);
+		expect(folders).toEqual(["Tax", "Tax/2025", "Tax/2025/empty"]);
+		expect(all.some((f) => f.path.endsWith("/"))).toBe(false);
+	});
+});

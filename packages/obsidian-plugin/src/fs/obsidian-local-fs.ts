@@ -37,6 +37,7 @@ export class ObsidianLocalFileSystem implements LocalFileSystem {
 	}
 
 	async writeFile(_root: string, relPath: string, content: Uint8Array): Promise<void> {
+		if (relPath.endsWith("/")) throw new Error(`not a file path: ${relPath}`);
 		const buffer = content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength) as ArrayBuffer;
 		const existing = this.app.vault.getAbstractFileByPath(relPath);
 		if (existing instanceof TFile) {
