@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-cloud-sync",
-	"version": "1.0.12",
+	"version": "1.0.13",
 	"description": "Two-way sync between Obsidian vault and cloud storage",
 	"main": "main.js",
 	"private": true,

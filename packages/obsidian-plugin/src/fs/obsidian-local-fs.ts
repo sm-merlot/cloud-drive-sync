@@ -43,9 +43,27 @@ export class ObsidianLocalFileSystem implements LocalFileSystem {
 			await this.app.vault.modifyBinary(existing, buffer);
 			return;
 		}
+		if (existing) throw new Error(`a folder already exists at ${relPath}, can't write a file there`);
 		const parentPath = relPath.includes("/") ? relPath.slice(0, relPath.lastIndexOf("/")) : "";
 		if (parentPath) await this.ensureFolder(parentPath);
-		await this.app.vault.createBinary(relPath, buffer);
+		try {
+			await this.app.vault.createBinary(relPath, buffer);
+		} catch (e) {
+			// createBinary refuses when something is already on disk, which the
+			// index lookup above missed. Two ways that happens, handled apart:
+			// a case-only twin on a case-insensitive filesystem (Android), where
+			// overwriting would clobber a different file, and a file the vault
+			// index doesn't know about yet, which is safe to overwrite.
+			const clash = await this.caseClash(relPath);
+			if (clash) {
+				throw new Error(`"${clash}" already exists locally and differs only by upper/lower case; rename one of them`);
+			}
+			if (await this.app.vault.adapter.exists(relPath, true)) {
+				await this.app.vault.adapter.writeBinary(relPath, buffer);
+				return;
+			}
+			throw e;
+		}
 	}
 
 	async deleteFile(_root: string, relPath: string): Promise<void> {
@@ -74,11 +92,44 @@ export class ObsidianLocalFileSystem implements LocalFileSystem {
 
 	private async ensureFolder(path: string): Promise<void> {
 		const existing = this.app.vault.getAbstractFileByPath(path);
-		if (existing) return;
+		if (existing instanceof TFolder) return;
+		if (existing) throw new Error(`a file already exists at ${path}, can't create a folder there`);
 		const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
 		if (parent) {
 			await this.ensureFolder(parent);
 		}
-		await this.app.vault.createFolder(path);
+		try {
+			await this.app.vault.createFolder(path);
+		} catch (e) {
+			// Same split as writeFile: a case-only twin is a real clash, a
+			// folder that's on disk but missing from the index is fine as is.
+			const clash = await this.caseClash(path);
+			if (clash) {
+				throw new Error(`"${clash}" already exists locally and differs only by upper/lower case; rename one of them`);
+			}
+			if (await this.app.vault.adapter.exists(path, true)) return;
+			throw e;
+		}
+	}
+
+	// Finds an on-disk entry whose path equals `path` ignoring case but not
+	// exactly. Checks the real directory listing, not the vault index, since
+	// a stale index is one of the cases this is guarding against.
+	private async caseClash(path: string): Promise<string | null> {
+		const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+		const lower = path.toLowerCase();
+		try {
+			const listing = await this.app.vault.adapter.list(parent || "/");
+			for (const entry of [...listing.files, ...listing.folders]) {
+				const p = entry.replace(/^\/+/, "");
+				if (p !== path && p.toLowerCase() === lower) return p;
+			}
+		} catch {
+			// parent unreadable; fall through to the exact-path check
+		}
+		const inIndex = this.app.vault
+			.getAllLoadedFiles()
+			.find((f) => f.path !== path && f.path.toLowerCase() === lower);
+		return inIndex?.path ?? null;
 	}
 }
