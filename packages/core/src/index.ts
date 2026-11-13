@@ -13,3 +13,5 @@ export * from "./util/merge";
 export * from "./util/constants";
 export * from "./util/binary-guard";
 export * from "./crypto/folder-crypto";
+export * from "./sync/folder-encryption";
+export * from "./sync/encryption-admin";

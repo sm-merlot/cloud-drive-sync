@@ -10,6 +10,7 @@ import { merge2way } from "../util/merge";
 import { isProbablyText } from "../util/binary-guard";
 import { HASH_VERIFY_THRESHOLD_BYTES, MULTIPART_THRESHOLD_BYTES } from "../util/constants";
 import { CONTENT_OVERHEAD_BYTES } from "../crypto/folder-crypto";
+import { EncryptionAdmin, EncryptionAdminError, type EncryptionAdminOptions } from "./encryption-admin";
 import { FolderEncryption, type EncryptionSettings, type LockedFolder } from "./folder-encryption";
 
 const FOLDER_SENTINEL = "__folder__";
@@ -110,7 +111,20 @@ export class SyncEngine {
 			const isFirstSync = this.stateStore.lastSyncTime === 0;
 			this.firstSyncStrategy = isFirstSync ? await this.ui.chooseFirstSyncStrategy() : null;
 
-			// 1. Gather local state
+			// 1. Gather remote state. This comes first: it decides which encrypted
+			// folders are locked, and the local filter below (shouldSkip) depends on
+			// that. Filtering local paths with the previous pass's lock state makes a
+			// just-unlocked folder look locally deleted.
+			this.progress("Listing remote...");
+			const allRemote = await this.listRemote(result);
+			const remoteMap = new Map<string, RemoteFileInfo>();
+			const remoteFolderMap = new Map<string, RemoteFileInfo>();
+			for (const f of allRemote) {
+				if (f.isFolder) remoteFolderMap.set(f.path, f);
+				else remoteMap.set(f.path, f);
+			}
+
+			// 2. Gather local state
 			this.progress("Listing local files...");
 			const localMap = new Map<string, LocalFileEntry>();
 			for (const f of await this.fs.listFiles(this.root)) {
@@ -119,16 +133,6 @@ export class SyncEngine {
 			const localFolderPaths = new Set<string>();
 			for (const p of await this.fs.listFolders(this.root)) {
 				if (!this.shouldSkip(p)) localFolderPaths.add(p);
-			}
-
-			// 2. Gather remote state
-			this.progress("Listing remote...");
-			const allRemote = await this.listRemote(result);
-			const remoteMap = new Map<string, RemoteFileInfo>();
-			const remoteFolderMap = new Map<string, RemoteFileInfo>();
-			for (const f of allRemote) {
-				if (f.isFolder) remoteFolderMap.set(f.path, f);
-				else remoteMap.set(f.path, f);
 			}
 
 			// 3. Compute actions
@@ -382,6 +386,46 @@ export class SyncEngine {
 		}
 
 		return result;
+	}
+
+	// ---------- encrypted folder changes (DEV-382) ----------
+
+	// Encrypt an existing folder in place. Calling it again with the same
+	// password resumes an interrupted run.
+	enableEncryption(folder: string, password: string, opts: EncryptionAdminOptions = {}): Promise<void> {
+		return this.exclusive((admin) => admin.enable(folder, password), opts);
+	}
+
+	// Re-encrypt the folder under a new password; other devices lock until
+	// they get it. Resumable with the same pair of passwords.
+	changeEncryptionPassword(
+		folder: string,
+		oldPassword: string,
+		newPassword: string,
+		opts: EncryptionAdminOptions = {},
+	): Promise<void> {
+		return this.exclusive((admin) => admin.changePassword(folder, oldPassword, newPassword), opts);
+	}
+
+	// Decrypt the folder back to plaintext and delete its key file. Resumable.
+	removeEncryption(folder: string, password: string, opts: EncryptionAdminOptions = {}): Promise<void> {
+		return this.exclusive((admin) => admin.remove(folder, password), opts);
+	}
+
+	private async exclusive(
+		run: (admin: EncryptionAdmin) => Promise<void>,
+		opts: EncryptionAdminOptions,
+	): Promise<void> {
+		if (this.syncing) throw new EncryptionAdminError("A sync is in progress; try again when it finishes");
+		this.syncing = true;
+		try {
+			await run(new EncryptionAdmin(this.provider, this.stateStore, {
+				...opts,
+				onProgress: opts.onProgress ?? ((m) => this.progress(m)),
+			}));
+		} finally {
+			this.syncing = false;
+		}
 	}
 
 	// ---------- classification ----------

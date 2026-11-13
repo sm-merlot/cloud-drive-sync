@@ -279,6 +279,27 @@ chunked format (v2 header) can lift the cap later.
 - Key-file unlocks are cached by (folder, key-file ETag, password), so
   PBKDF2 runs once per launch, not once per sync.
 
+### 8. Implementation notes (DEV-382)
+
+- The `rotation` marker carries what a restart needs to resume: `fromKeyId`,
+  plus `previous` (the replaced key file, so the old salt survives) for a
+  password change, or `toPlaintext: true` for a removal. None of it is secret.
+- Each operation validates up front (unreadable objects, names over 141
+  bytes, multipart-sized objects) and writes nothing if validation fails.
+- Calling an operation again with the same password(s) resumes it. The engine
+  exposes `enableEncryption`, `changeEncryptionPassword` and
+  `removeEncryption`, which refuse to run during a sync. The host (DEV-383)
+  remembers a pending operation and re-runs it on launch.
+- The operating device updates its own sync records as it moves each file, so
+  its next sync is quiet.
+- Dot-path objects inside an encrypted folder (for example `.DS_Store` from a
+  server-side tool) are ignored. They are never synced, and an encrypted name
+  never starts with ".", so they can't cause a lock.
+- `sync()` now lists the remote **before** the local side. The local filter
+  depends on the lock state, which the remote listing decides; listing local
+  first used the previous pass's state and made a just-unlocked folder look
+  locally deleted (a bug in #13, fixed here).
+
 ## Password change (key rotation)
 
 Done on one device, resumable, atomic per file:

@@ -11,6 +11,7 @@
 import type { CloudProvider } from "../providers/cloud-provider";
 import type { RemoteFileInfo } from "../types";
 import { computeMD5 } from "../util/hash";
+import { isDotPath } from "../util/path";
 import {
 	KEY_FILE_NAME,
 	decryptContent,
@@ -119,7 +120,11 @@ export class FolderEncryption {
 				continue;
 			}
 			if (this.locked.has(folder)) continue;
-			if (f.name === KEY_FILE_NAME && f.path === `${folder}/${KEY_FILE_NAME}`) continue;
+			// Dot-paths (the key file, .DS_Store from a server-side tool, ...)
+			// are never synced, and encrypted names never start with ".", so
+			// they can't be ours. Dropping them can't cause deletes:
+			// shouldSkip ignores dot-paths in planning anyway.
+			if (isDotPath(f.path.slice(folder.length + 1))) continue;
 			try {
 				const plain = await this.toPlainPath(folder, f.path, plainPrefix);
 				const list = translated.get(folder) ?? [];
