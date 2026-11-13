@@ -562,6 +562,16 @@ export default class CloudSyncPlugin extends Plugin {
 		await this.saveSettings();
 	}
 
+	// Drop the folder from this device's settings and forget its password,
+	// without touching the server. Safe: if the folder still has a key file,
+	// the engine keeps it locked anyway ("No password for ...").
+	async forgetEncryptedFolder(folder: string): Promise<void> {
+		this.settings.encryptedFolders = (this.settings.encryptedFolders ?? []).filter((f) => f !== folder);
+		this.secrets.clear(folder);
+		await this.saveSettings();
+		this.runSync();
+	}
+
 	private requireEngine(): SyncEngine {
 		const engine = this.getSyncEngine();
 		if (!engine) throw new Error("Configure a sync provider first");

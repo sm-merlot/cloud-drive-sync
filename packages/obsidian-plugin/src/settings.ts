@@ -221,6 +221,12 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 					this.display();
 				}),
 			);
+			row.addExtraButton((b) =>
+				b.setIcon("x").setTooltip("Forget on this device (server unchanged)").onClick(async () => {
+					await plugin.forgetEncryptedFolder(folder);
+					this.display();
+				}),
+			);
 			row.addButton((b) =>
 				b.setButtonText("Remove encryption").setWarning().onClick(async () => {
 					const r = await new PasswordFormModal(this.app, {
