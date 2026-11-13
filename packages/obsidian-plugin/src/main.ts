@@ -5,6 +5,7 @@ import {
 	S3Provider,
 	SyncStateStore,
 	UnlockCache,
+	atRestCodec,
 	convertFolderToAtRest,
 	convertFolderToPlaintext,
 	createKeyFile,
@@ -311,6 +312,15 @@ export default class CloudSyncPlugin extends Plugin {
 			this.settings.debugMode ?? false,
 			this.settings.mergeToolCommand,
 		);
+		ui.labelFor = async (path) => {
+			const session = this.atRest.sessionFor(path);
+			if (!session?.unlocked) return null;
+			try {
+				return `🔒 ${await session.plainPathOf(path)}`;
+			} catch {
+				return null;
+			}
+		};
 		const engine = new SyncEngine(
 			new ObsidianLocalFileSystem(this.app), "",
 			provider, stateStore, ui,
@@ -318,6 +328,7 @@ export default class CloudSyncPlugin extends Plugin {
 				conflictStrategy: this.settings.conflictStrategy,
 				excludePatterns: this.settings.excludePatterns,
 				debugMode: this.settings.debugMode,
+				atRestCodec: atRestCodec((path) => this.atRest.sessionFor(path)),
 				encryption: {
 					folders: this.settings.encryptedFolders ?? [],
 					passwordFor: (folder) => this.secrets.get(folder),

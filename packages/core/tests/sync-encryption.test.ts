@@ -4,7 +4,8 @@ import { MULTIPART_THRESHOLD_BYTES } from "../src/util/constants";
 import { createKeyFile, isEncryptedContent, serializeKeyFile, type FolderKeys } from "../src/crypto/folder-crypto";
 import { encryptAtRest, toAtRestPath } from "../src/crypto/at-rest";
 import { UnlockCache } from "../src/sync/folder-encryption";
-import { AtRestSession } from "../src/sync/at-rest-session";
+import { AtRestSession, atRestCodec } from "../src/sync/at-rest-session";
+import { SyncEngine } from "../src/sync/sync-engine";
 import { convertFolderToAtRest, convertFolderToPlaintext, reencryptAtRestFolder } from "../src/sync/at-rest-ops";
 import type { ConflictStrategy } from "../src/types";
 import type { FakeProvider } from "./helpers/fakes";
@@ -655,5 +656,122 @@ describe("at-rest conversion across two devices (what the plugin orchestrates)",
 		const listing = await s.list();
 		expect(listing.unreadable).toEqual([]);
 		expect(listing.nodes.filter((n) => n.isFile).map((n) => n.plainPath).sort()).toEqual(["Journal/Sub/b.md", "Journal/a.md"]);
+	});
+});
+
+describe("at-rest conflicts: merged in memory when unlocked (DEV-395)", () => {
+	async function twoDevices(strategy: ConflictStrategy) {
+		const provider = makeProvider();
+		const created = await createKeyFile("pw", { iterations: 1000, mode: "at-rest" });
+		provider.setObject(KEY_PATH, serializeKeyFile(created.keyFile), tick());
+		const mk = (lastSyncTime?: number) => {
+			const d = device(provider, null, { configured: false, strategy, lastSyncTime });
+			const session = new AtRestSession(d.fs, "", FOLDER, created.keyFile);
+			// rebuild the engine with a codec bound to this device's session
+			d.engine = new SyncEngine(d.fs, "/root", provider, d.store, d.ui, {
+				conflictStrategy: strategy, excludePatterns: [],
+				atRestCodec: atRestCodec(() => session),
+			});
+			d.engine.onNotice = (m) => d.notices.push(m);
+			return { d, session };
+		};
+		const A = mk();
+		await A.session.unlock("pw");
+		await A.session.write("Journal/n.md", new TextEncoder().encode("line 1\nline 2\nline 3\n"));
+		await A.d.engine.sync();
+		const B = mk(0);
+		await B.d.engine.sync();
+		await B.session.unlock("pw");
+		const path = await A.session.diskPathOf("Journal/n.md", true);
+		return { provider, A, B, path };
+	}
+
+	const edit = async (x: { d: Device; session: AtRestSession }, body: string) => {
+		await x.session.write("Journal/n.md", new TextEncoder().encode(body));
+		// the fake fs stamps writes with Date.now(); move past the last sync
+		for (const v of x.d.fs.files.values()) v.mtimeMs = tick();
+	};
+
+	it("the same edit on both devices resolves silently", async () => {
+		const { A, B } = await twoDevices("prompt");
+		await edit(A, "same\n");
+		await A.d.engine.sync();
+		await edit(B, "same\n");
+		const r = await B.d.engine.sync();
+		expect(B.d.ui.surfacedIssues).toEqual([]);
+		expect(r.errors).toBe(0);
+		expect(text(await B.session.read("Journal/n.md"))).toBe("same\n");
+		const again = await B.d.engine.sync();
+		expect([again.uploaded, again.downloaded]).toEqual([0, 0]);
+	});
+
+	it("smart-merge merges non-overlapping edits in memory and uploads ciphertext", async () => {
+		const { provider, A, B, path } = await twoDevices("smart-merge");
+		await edit(A, "line 1 from A\nline 2\nline 3\n");
+		await A.d.engine.sync();
+		await edit(B, "line 1\nline 2\nline 3 from B\n");
+		await B.d.engine.sync();
+		const merged = text(await B.session.read("Journal/n.md"))!;
+		// A 2-way merge without a base may or may not resolve this cleanly;
+		// either way: merged and uploaded, or surfaced untouched. Never lost.
+		if (B.d.ui.surfacedIssues.length === 0) {
+			expect(merged).toContain("from A");
+			expect(merged).toContain("from B");
+			await A.d.engine.sync();
+			expect(text(await A.session.read("Journal/n.md"))).toBe(merged);
+		} else {
+			expect(B.d.ui.surfacedIssues.map((i) => i.type)).toEqual(["conflict"]);
+			expect(merged).toBe("line 1\nline 2\nline 3 from B\n");
+		}
+		expect(text(provider.objects.get(path)!.bytes)).not.toContain("line");
+	});
+
+	it("an explicit Merge resolution merges when unlocked", async () => {
+		const { A, B, path } = await twoDevices("prompt");
+		await edit(A, "A only\n");
+		await A.d.engine.sync();
+		await edit(B, "B only\n");
+		B.d.ui.cannedResolutions = [{ vaultPath: path, resolution: "merge", remoteId: path }];
+		await B.d.engine.sync();
+		const merged = text(await B.session.read("Journal/n.md"))!;
+		expect(merged).toContain("A only");
+		expect(merged).toContain("B only");
+		// markers or a clean merge: either way the next save goes up and A converges
+		await edit(B, merged.replace(/<<<<<<<.*\n|=======\n|>>>>>>>.*\n/g, ""));
+		await B.d.engine.sync();
+		await A.d.engine.sync();
+		expect(text(await A.session.read("Journal/n.md"))).toBe(text(await B.session.read("Journal/n.md")));
+	});
+
+	it("while locked, Merge asks to unlock and changes nothing", async () => {
+		const { A, B, path } = await twoDevices("prompt");
+		await edit(A, "A\n");
+		await A.d.engine.sync();
+		await edit(B, "B\n");
+		await B.session.lock("manual");
+		const before = B.d.fs.files.get(path)!.bytes;
+		B.d.ui.cannedResolutions = [{ vaultPath: path, resolution: "merge", remoteId: path }];
+		await B.d.engine.sync();
+		expect(B.d.notices.some((n) => n.includes("Unlock the folder in Private notes"))).toBe(true);
+		expect(B.d.fs.files.get(path)!.bytes).toEqual(before);
+	});
+});
+
+describe("at-rest conflicts never reach an external merge tool", () => {
+	it("an external resolution on a .cdse file uses the in-app merge", async () => {
+		const provider = makeProvider();
+		const created = await createKeyFile("pw", { iterations: 1000, mode: "at-rest" });
+		provider.setObject(KEY_PATH, serializeKeyFile(created.keyFile), tick());
+		const path = await toAtRestPath(created.keys, FOLDER, "Journal/n.md", true);
+		const enc = (s: string) => encryptAtRest(created.keys, "Journal/n.md", new TextEncoder().encode(s));
+		const a = device(provider, null, { configured: false });
+		a.fs.files.set(path, { bytes: await enc("local"), mtimeMs: tick() });
+		provider.objects.set(path, { bytes: await enc("remote"), modifiedTime: tick() });
+		a.store.setRecord(path, { vaultPath: path, remoteId: path, remoteFolderId: FOLDER, localModTime: 1, remoteModTime: 1, contentHash: "x", size: 1 });
+		let external = false;
+		a.ui.externalMerge = async () => { external = true; };
+		a.ui.cannedResolutions = [{ vaultPath: path, resolution: "external", remoteId: path }];
+		await a.engine.sync();
+		expect(external).toBe(false);
 	});
 });

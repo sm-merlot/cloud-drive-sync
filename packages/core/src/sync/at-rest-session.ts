@@ -44,6 +44,34 @@ export interface AtRestListing {
 	plaintext: string[];
 }
 
+// Lets the sync engine merge a conflicted at-rest file in memory, when its
+// folder is unlocked on this device (DEV-395)
+export interface AtRestCodec {
+	// null when the file's folder is locked (or unknown) here
+	open(diskPath: string): Promise<AtRestFileCodec | null>;
+}
+
+export interface AtRestFileCodec {
+	plainPath: string;
+	decrypt(data: Uint8Array): Promise<Uint8Array>;
+	encrypt(plaintext: Uint8Array): Promise<Uint8Array>;
+}
+
+export function atRestCodec(sessionFor: (diskPath: string) => AtRestSession | null): AtRestCodec {
+	return {
+		async open(diskPath) {
+			const session = sessionFor(diskPath);
+			if (!session?.unlocked) return null;
+			const plainPath = await session.plainPathOf(diskPath);
+			return {
+				plainPath,
+				decrypt: (data) => session.decryptBytes(plainPath, data),
+				encrypt: (plain) => session.encryptBytes(plainPath, plain),
+			};
+		},
+	};
+}
+
 export class AtRestLockedError extends Error {
 	constructor(folder: string) {
 		super(`${folder} is locked`);
@@ -195,6 +223,14 @@ export class AtRestSession {
 
 	async diskPathOf(plainPath: string, isFile: boolean): Promise<string> {
 		return toAtRestPath(this.requireKeys(), this.folder, plainPath, isFile);
+	}
+
+	decryptBytes(plainPath: string, data: Uint8Array): Promise<Uint8Array> {
+		return decryptAtRest(this.requireKeys(), plainPath, data);
+	}
+
+	encryptBytes(plainPath: string, plaintext: Uint8Array): Promise<Uint8Array> {
+		return encryptAtRest(this.requireKeys(), plainPath, plaintext);
 	}
 
 	async exists(plainPath: string): Promise<boolean> {

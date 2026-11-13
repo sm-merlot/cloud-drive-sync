@@ -20,6 +20,8 @@ import { SyncPlanModal } from "./sync-plan-modal";
 // child_process — deliberately kept out of the shared engine.
 export class ObsidianSyncUI implements SyncUIPort {
 	externalMerge?: (vaultPath: string, remoteId: string) => Promise<void>;
+	// Friendlier names for the conflict dialog (private notes' real titles)
+	labelFor?: (vaultPath: string) => Promise<string | null>;
 
 	constructor(
 		private app: App,
@@ -39,7 +41,14 @@ export class ObsidianSyncUI implements SyncUIPort {
 	}
 
 	async resolveSyncIssues(issues: SyncIssue[]): Promise<SyncIssueResolution[]> {
-		return new SyncResultsModal(this.app, issues).openAndWait();
+		const labels = new Map<string, string>();
+		if (this.labelFor) {
+			for (const issue of issues) {
+				const label = await this.labelFor(issue.vaultPath);
+				if (label) labels.set(issue.vaultPath, label);
+			}
+		}
+		return new SyncResultsModal(this.app, issues, labels).openAndWait();
 	}
 
 	async reviewPlan(actions: SyncAction[], issues: SyncIssue[]): Promise<{ cancelled: boolean }> {
