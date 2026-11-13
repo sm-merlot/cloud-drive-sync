@@ -75,10 +75,18 @@ export class NameTooLongError extends Error {
 
 // ---------- key file ----------
 
+// Present while an enable / password change / removal is in progress. Every
+// device except the one running it treats the folder as locked.
 export interface KeyFileRotation {
 	// keyId of the generation being replaced, or "plaintext" when enabling
 	// encryption on an existing folder
 	fromKeyId: string;
+	// Password change: the replaced key file (minus its own rotation), so the
+	// rotating device can still derive the old keys after a restart. Holds
+	// nothing secret, same as any key file.
+	previous?: Omit<FolderKeyFile, "rotation">;
+	// Removal: decrypting back to plaintext; the key file is deleted at the end
+	toPlaintext?: boolean;
 }
 
 export interface FolderKeyFile {
@@ -210,6 +218,10 @@ export function parseKeyFile(text: string): FolderKeyFile {
 	} catch {
 		throw new KeyFileFormatError("not JSON");
 	}
+	return parseKeyFileObject(raw, true) as FolderKeyFile;
+}
+
+function parseKeyFileObject(raw: unknown, allowRotation: boolean): FolderKeyFile | Omit<FolderKeyFile, "rotation"> {
 	if (!raw || typeof raw !== "object") throw new KeyFileFormatError("not an object");
 	const o = raw as Record<string, unknown>;
 	if (o.format !== KEY_FILE_FORMAT) throw new KeyFileFormatError("wrong format marker");
@@ -232,26 +244,29 @@ export function parseKeyFile(text: string): FolderKeyFile {
 		throw new KeyFileFormatError("missing check value");
 	}
 
+	const base = {
+		format: KEY_FILE_FORMAT as typeof KEY_FILE_FORMAT,
+		version: KEY_FILE_VERSION,
+		keyId: o.keyId,
+		kdf: { name: "PBKDF2-SHA256" as const, iterations: kdf.iterations, salt: kdf.salt },
+		check: { nonce: check.nonce, ciphertext: check.ciphertext },
+	};
+	if (!allowRotation) return base;
+
 	let rotation: KeyFileRotation | null = null;
 	if (o.rotation !== null && o.rotation !== undefined) {
 		const r = o.rotation as Record<string, unknown>;
 		if (typeof r.fromKeyId !== "string") throw new KeyFileFormatError("bad rotation");
 		rotation = { fromKeyId: r.fromKeyId };
+		if (r.previous !== undefined) rotation.previous = parseKeyFileObject(r.previous, false);
+		if (r.toPlaintext === true) rotation.toPlaintext = true;
 	}
-
-	return {
-		format: KEY_FILE_FORMAT,
-		version: KEY_FILE_VERSION,
-		keyId: o.keyId,
-		kdf: { name: "PBKDF2-SHA256", iterations: kdf.iterations, salt: kdf.salt },
-		check: { nonce: check.nonce, ciphertext: check.ciphertext },
-		rotation,
-	};
+	return { ...base, rotation };
 }
 
 // Derive keys from the password and verify them against the key file's check
 // value. A wrong password fails the GCM tag → WrongPasswordError.
-export async function unlockKeyFile(keyFile: FolderKeyFile, password: string): Promise<FolderKeys> {
+export async function unlockKeyFile(keyFile: Omit<FolderKeyFile, "rotation">, password: string): Promise<FolderKeys> {
 	const keys = await deriveFolderKeys(password, base32Decode(keyFile.keyId), {
 		iterations: keyFile.kdf.iterations,
 		salt: base64Decode(keyFile.kdf.salt),
