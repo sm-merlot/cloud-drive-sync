@@ -1,0 +1,33 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # The repo is public: a pull request from a fork runs on GitHub-hosted
+    # runners, never on the self-hosted homelab runner. Same-repo branches and
+    # pushes to main use homelab-2gb, matching the release workflow.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'homelab-2gb' }}
+    container: node:22
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Core tests
+        run: npm test --workspace=packages/core
+
+      - name: Build Obsidian plugin (tsc + esbuild)
+        run: npm run build --workspace=packages/obsidian-plugin
