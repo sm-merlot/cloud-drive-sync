@@ -10,7 +10,7 @@ import { merge2way } from "../util/merge";
 import { isProbablyText } from "../util/binary-guard";
 import { HASH_VERIFY_THRESHOLD_BYTES, MULTIPART_THRESHOLD_BYTES } from "../util/constants";
 import { CONTENT_OVERHEAD_BYTES } from "../crypto/folder-crypto";
-import { EncryptionAdmin, EncryptionAdminError, type EncryptionAdminOptions } from "./encryption-admin";
+import { EncryptionAdmin, EncryptionAdminError, type EncryptionAdminOptions, type EncryptionProbe } from "./encryption-admin";
 import { FolderEncryption, type EncryptionSettings, type LockedFolder } from "./folder-encryption";
 
 const FOLDER_SENTINEL = "__folder__";
@@ -53,6 +53,9 @@ export class SyncEngine {
 	onProgress?: (message: string) => void;
 	// User-visible notices (toasts in Obsidian, status line in Tauri)
 	onNotice?: (message: string) => void;
+	// Locked encrypted folder found this pass. When unset, the reason goes
+	// to onNotice; hosts that sync often set this to de-duplicate.
+	onLocked?: (locked: LockedFolder) => void;
 
 	constructor(
 		private fs: LocalFileSystem,
@@ -88,7 +91,8 @@ export class SyncEngine {
 		const listing = await this.encryption.prepare(raw);
 		for (const locked of this.encryption.lockedFolders) {
 			result.lockedFolders.push(locked);
-			this.onNotice?.(locked.reason);
+			if (this.onLocked) this.onLocked(locked);
+			else this.onNotice?.(locked.reason);
 		}
 		return listing;
 	}
@@ -389,6 +393,12 @@ export class SyncEngine {
 	}
 
 	// ---------- encrypted folder changes (DEV-382) ----------
+
+	// What the remote says about a folder, and whether a password fits it.
+	// Read-only; used by settings UIs before choosing enable vs. join.
+	probeEncryption(folder: string, password: string): Promise<EncryptionProbe> {
+		return new EncryptionAdmin(this.provider, this.stateStore).probe(folder, password);
+	}
 
 	// Encrypt an existing folder in place. Calling it again with the same
 	// password resumes an interrupted run.

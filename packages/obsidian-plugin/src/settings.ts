@@ -2,6 +2,7 @@ import { App, ButtonComponent, Notice, Platform, PluginSettingTab, Setting } fro
 import { S3Provider } from "@cloud-drive-sync/core";
 import type CloudSyncPlugin from "./main";
 import { GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
+import { KEEP_PASSWORD_WARNING, PasswordFormModal } from "./encryption/encryption-modals";
 import { ObsidianHttpClient } from "./http/obsidian-http-client";
 
 export class CloudSyncSettingTab extends PluginSettingTab {
@@ -123,6 +124,8 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 				);
 		}
 
+		this.displayEncryptionSettings(containerEl);
+
 		// --- Debug ---
 		containerEl.createEl("h3", { text: "Debug" });
 
@@ -149,6 +152,122 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 			text: `Version: ${this.plugin.manifest.version}`,
 			cls: "setting-item-description",
 		});
+	}
+
+	private displayEncryptionSettings(containerEl: HTMLElement): void {
+		containerEl.createEl("h3", { text: "Encrypted folders" });
+		containerEl.createEl("p", {
+			cls: "setting-item-description",
+			text: "Files in these folders are encrypted on this device before upload, so the server only ever holds ciphertext. A device without the password doesn't sync the folder at all.",
+		});
+		containerEl.createEl("p", { cls: "setting-item-description mod-warning", text: KEEP_PASSWORD_WARNING });
+
+		const plugin = this.plugin;
+		const report = (e: unknown) => new Notice(e instanceof Error ? e.message : String(e), 10_000);
+
+		for (const folder of plugin.settings.encryptedFolders ?? []) {
+			const locked = plugin.lockedFolders.find((l) => l.path === folder);
+			const hasPassword = plugin.secrets.get(folder) !== null;
+			const status = locked ? `Locked: ${locked.reason}` : hasPassword ? "Unlocked on this device" : "No password on this device";
+			const row = new Setting(containerEl).setName(folder).setDesc(status);
+
+			if (plugin.settings.pendingEncryptionOp?.folder === folder) {
+				row.setDesc("An encryption change for this folder didn't finish. It stays locked on every device until it does.");
+				row.addButton((b) =>
+					b.setButtonText("Resume").setCta().onClick(async () => {
+						await plugin.resumeEncryptionOp();
+						this.display();
+					}),
+				);
+				continue;
+			}
+
+			row.addButton((b) =>
+				b.setButtonText(hasPassword ? "Re-enter password" : "Enter password").onClick(async () => {
+					const r = await new PasswordFormModal(this.app, {
+						title: `Password for ${folder}`,
+						fields: [{ key: "password", label: "Password" }],
+						submitText: "Unlock",
+					}).openAndWait();
+					if (!r) return;
+					try {
+						await plugin.setFolderPassword(folder, r.values.password!);
+						this.display();
+					} catch (e) {
+						report(e);
+					}
+				}),
+			);
+			row.addButton((b) =>
+				b.setButtonText("Change password").onClick(async () => {
+					const r = await new PasswordFormModal(this.app, {
+						title: `Change the password for ${folder}`,
+						intro: [
+							"Every file in the folder is re-encrypted. Other devices stop syncing it until you enter the new password there.",
+						],
+						warning: KEEP_PASSWORD_WARNING,
+						fields: [
+							{ key: "old", label: "Current password" },
+							{ key: "new", label: "New password", confirm: true },
+						],
+						submitText: "Change password",
+					}).openAndWait();
+					if (!r) return;
+					try {
+						await plugin.changeFolderPassword(folder, r.values.old!, r.values.new!);
+					} catch (e) {
+						report(e);
+					}
+					this.display();
+				}),
+			);
+			row.addButton((b) =>
+				b.setButtonText("Remove encryption").setWarning().onClick(async () => {
+					const r = await new PasswordFormModal(this.app, {
+						title: `Remove encryption from ${folder}?`,
+						intro: [
+							"Every file in the folder is decrypted and stored on the server as plaintext again, readable by anything with access to the server.",
+							"Other devices keep the folder locked until you remove it from their settings too.",
+						],
+						fields: [{ key: "password", label: "Password" }],
+						submitText: "Decrypt on server",
+						danger: true,
+					}).openAndWait();
+					if (!r) return;
+					try {
+						await plugin.removeFolderEncryption(folder, r.values.password!);
+					} catch (e) {
+						report(e);
+					}
+					this.display();
+				}),
+			);
+		}
+
+		new Setting(containerEl)
+			.setName("Add encrypted folder")
+			.setDesc("Encrypt a folder, or unlock one that another device already encrypted")
+			.addButton((b) =>
+				b.setButtonText("Add").onClick(async () => {
+					const r = await new PasswordFormModal(this.app, {
+						title: "Add encrypted folder",
+						intro: [
+							"If another device already encrypted this folder, enter the same password. Otherwise this sets its password.",
+						],
+						warning: KEEP_PASSWORD_WARNING,
+						folderPicker: true,
+						fields: [{ key: "password", label: "Password", confirm: true }],
+						submitText: "Continue",
+					}).openAndWait();
+					if (!r?.folder) return;
+					try {
+						await plugin.addEncryptedFolder(r.folder, r.values.password!);
+					} catch (e) {
+						report(e);
+					}
+					this.display();
+				}),
+			);
 	}
 
 	private displayS3Settings(containerEl: HTMLElement): void {

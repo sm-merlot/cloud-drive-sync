@@ -4,11 +4,15 @@ import {
 	SyncEngine,
 	S3Provider,
 	SyncStateStore,
+	UnlockCache,
 	isDotPath,
 	shouldExclude,
 	type CloudProvider,
+	type LockedFolder,
 	type PluginSettings,
 } from "@cloud-drive-sync/core";
+import { FolderSecrets } from "./encryption/folder-secrets";
+import { ConfirmModal } from "./encryption/encryption-modals";
 import { CloudSyncSettingTab } from "./settings";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
 import { GoogleDriveApi } from "./providers/google-drive/google-drive-api";
@@ -48,9 +52,17 @@ export default class CloudSyncPlugin extends Plugin {
 	// results or plan dialog. Without it the interval timer started another
 	// sync every few minutes and stacked a new dialog over the unanswered one.
 	private syncInFlight = false;
+	// Encrypted folders
+	secrets!: FolderSecrets;
+	// Survives engine rebuilds, so PBKDF2 runs once per folder per launch
+	private unlockCache = new UnlockCache();
+	lockedFolders: LockedFolder[] = [];
+	// Lock notices already shown this session (folder + reason)
+	private shownLocks = new Set<string>();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.secrets = new FolderSecrets(this.app);
 
 		this.addSettingTab(new CloudSyncSettingTab(this.app, this));
 
@@ -81,8 +93,11 @@ export default class CloudSyncPlugin extends Plugin {
 		this.setupStatusRefresh();
 		this.setupFileWatcher();
 
-		this.app.workspace.onLayoutReady(() => {
+		this.app.workspace.onLayoutReady(async () => {
 			this.setupMobileAction();
+			// An interrupted encryption change keeps its folder locked on every
+			// device until it finishes, so resume it before anything else.
+			if (this.settings.pendingEncryptionOp) await this.resumeEncryptionOp();
 			if (this.settings.syncOnStartup) this.runSync();
 		});
 	}
@@ -185,7 +200,8 @@ export default class CloudSyncPlugin extends Plugin {
 		this.updateStatusBar("syncing");
 		this.updateRibbon("syncing");
 		try {
-			await engine.syncPaths(paths);
+			const result = await engine.syncPaths(paths);
+			this.noteLockedFolders(result.lockedFolders);
 			this.updateStatusBar("idle");
 			this.updateRibbon("idle");
 		} catch (e) {
@@ -224,6 +240,7 @@ export default class CloudSyncPlugin extends Plugin {
 		if (!this.settings.syncState.files) {
 			this.settings.syncState.files = {};
 		}
+		if (!this.settings.encryptedFolders) this.settings.encryptedFolders = [];
 	}
 
 	async saveSettings(): Promise<void> {
@@ -270,10 +287,30 @@ export default class CloudSyncPlugin extends Plugin {
 				conflictStrategy: this.settings.conflictStrategy,
 				excludePatterns: this.settings.excludePatterns,
 				debugMode: this.settings.debugMode,
+				encryption: {
+					folders: this.settings.encryptedFolders ?? [],
+					passwordFor: (folder) => this.secrets.get(folder),
+					unlockCache: this.unlockCache,
+				},
 			},
 		);
 		engine.onNotice = (msg) => new Notice(msg);
+		// Syncs run every few minutes and on every edit; show each lock once
+		// per session, not on every pass.
+		engine.onLocked = (locked) => {
+			const key = `${locked.path}\u0000${locked.reason}`;
+			if (this.shownLocks.has(key)) return;
+			this.shownLocks.add(key);
+			new Notice(`${locked.reason}. Nothing in it is synced on this device. Open Cloud Sync settings to fix it.`, 10_000);
+		};
 		return engine;
+	}
+
+	private noteLockedFolders(locked: LockedFolder[]): void {
+		this.lockedFolders = locked;
+		// Forget notices for folders that unlocked, so a later re-lock shows again
+		const stillLocked = new Set(locked.map((l) => `${l.path}\u0000${l.reason}`));
+		for (const key of this.shownLocks) if (!stillLocked.has(key)) this.shownLocks.delete(key);
 	}
 
 	private getSyncEngine(): SyncEngine | null {
@@ -345,6 +382,7 @@ export default class CloudSyncPlugin extends Plugin {
 		this.updateRibbon("syncing");
 		try {
 			const result = await engine.sync();
+			this.noteLockedFolders(result.lockedFolders);
 			this.currentStage = "idle";
 			this.updateStatusBar("idle");
 			this.updateRibbon("idle");
@@ -354,6 +392,7 @@ export default class CloudSyncPlugin extends Plugin {
 			if (result.deleted > 0) parts.push(`${result.deleted} deleted`);
 			if (result.conflicts > 0) parts.push(`${result.conflicts} conflicts resolved`);
 			if (result.errors > 0) parts.push(`${result.errors} errors`);
+			if (result.lockedFolders.length > 0) parts.push(`${result.lockedFolders.length} locked folder${result.lockedFolders.length === 1 ? "" : "s"} skipped`);
 			if (manual) {
 				new Notice(parts.length > 0 ? `Sync: ${parts.join(", ")}` : "Everything up to date");
 			}
@@ -459,6 +498,141 @@ export default class CloudSyncPlugin extends Plugin {
 		new Notice(`Sync folder set to: ${chosen.name}`);
 	}
 
+	// ---------- encrypted folders ----------
+
+	isEncryptedFolder(folder: string): boolean {
+		return (this.settings.encryptedFolders ?? []).includes(folder);
+	}
+
+	// Add a folder on this device: encrypts it if the server copy is
+	// plaintext, or joins it if another device already encrypted it.
+	async addEncryptedFolder(folder: string, password: string): Promise<void> {
+		if (this.isEncryptedFolder(folder)) throw new Error(`${folder} is already set up on this device`);
+		if (this.syncInFlight) throw new Error("A sync is running. Try again when it finishes.");
+		const engine = this.requireEngine();
+		const probe = await engine.probeEncryption(folder, password);
+		if (probe.state === "encrypted") {
+			if (!probe.passwordOk) throw new Error(`Wrong password for ${folder}`);
+			this.secrets.set(folder, password);
+			this.settings.encryptedFolders = [...(this.settings.encryptedFolders ?? []), folder];
+			await this.saveSettings();
+			new Notice(`${folder} unlocked on this device`);
+			this.runSync();
+			return;
+		}
+
+		const ok = await new ConfirmModal(this.app, `Encrypt ${folder}?`, [
+			"Every file in this folder will be encrypted on the server, including its file and subfolder names. The plaintext copies on the server are deleted.",
+			"Update the Cloud Sync plugin on every device first. Devices on an older version will download unreadable files.",
+			"Copies made before now (ZFS snapshots, backups) still hold the plaintext. Encryption only protects what is written from now on.",
+			"Other devices stop syncing this folder until you enter the password there.",
+		], "Encrypt").openAndWait();
+		if (!ok) return;
+
+		this.secrets.set(folder, password);
+		this.settings.encryptedFolders = [...(this.settings.encryptedFolders ?? []), folder];
+		await this.runEncryptionOp({ kind: "enable", folder }, (e) => e.enableEncryption(folder, password));
+	}
+
+	// Enter (or fix) the password on a device where the folder is locked
+	async setFolderPassword(folder: string, password: string): Promise<void> {
+		const probe = await this.requireEngine().probeEncryption(folder, password);
+		if (probe.state !== "encrypted") throw new Error(`${folder} has no key file on the server`);
+		if (!probe.passwordOk) throw new Error(`Wrong password for ${folder}`);
+		this.secrets.set(folder, password);
+		await this.saveSettings();
+		new Notice(`${folder} unlocked on this device`);
+		this.runSync();
+	}
+
+	async changeFolderPassword(folder: string, oldPassword: string, newPassword: string): Promise<void> {
+		this.secrets.setOld(folder, oldPassword);
+		this.secrets.set(folder, newPassword);
+		const ok = await this.runEncryptionOp({ kind: "change", folder }, (e) =>
+			e.changeEncryptionPassword(folder, oldPassword, newPassword),
+		);
+		if (ok) this.secrets.clearOld(folder);
+	}
+
+	async removeFolderEncryption(folder: string, password: string): Promise<void> {
+		const ok = await this.runEncryptionOp({ kind: "remove", folder }, (e) => e.removeEncryption(folder, password));
+		if (!ok) return;
+		this.settings.encryptedFolders = (this.settings.encryptedFolders ?? []).filter((f) => f !== folder);
+		this.secrets.clear(folder);
+		await this.saveSettings();
+	}
+
+	private requireEngine(): SyncEngine {
+		const engine = this.getSyncEngine();
+		if (!engine) throw new Error("Configure a sync provider first");
+		return engine;
+	}
+
+	private async runEncryptionOp(
+		op: { kind: "enable" | "change" | "remove"; folder: string },
+		run: (engine: SyncEngine) => Promise<void>,
+	): Promise<boolean> {
+		// Errors before the operation starts (busy, not configured) throw;
+		// errors during it are shown here and return false.
+		if (this.syncInFlight) throw new Error("A sync is running. Try again when it finishes.");
+		const engine = this.requireEngine();
+		this.settings.pendingEncryptionOp = op;
+		await this.saveSettings();
+
+		const label = op.kind === "enable" ? "Encrypting" : op.kind === "change" ? "Re-encrypting" : "Decrypting";
+		this.syncInFlight = true;
+		this.updateStatusBar("syncing", `${label} ${op.folder}…`);
+		this.updateRibbon("syncing");
+		engine.onProgress = (msg) => this.updateStatusBar("syncing", `${label}: ${msg}`);
+		try {
+			await run(engine);
+			delete this.settings.pendingEncryptionOp;
+			await this.saveSettings();
+			new Notice(`${label} ${op.folder}: done`);
+		} catch (e) {
+			// pendingEncryptionOp stays set; the next launch resumes it
+			new Notice(`${label} ${op.folder} stopped: ${e instanceof Error ? e.message : String(e)}. It resumes next time Obsidian starts.`, 15_000);
+			return false;
+		} finally {
+			this.updateStatusBar("idle");
+			this.updateRibbon("idle");
+			this.syncFinished();
+		}
+		this.runSync();
+		return true;
+	}
+
+	async resumeEncryptionOp(): Promise<void> {
+		const op = this.settings.pendingEncryptionOp;
+		if (!op) return;
+		const pw = this.secrets.get(op.folder);
+		if (!pw) {
+			new Notice(`Can't resume the encryption change for ${op.folder}: no password stored on this device`, 15_000);
+			return;
+		}
+		new Notice(`Resuming the encryption change for ${op.folder}…`);
+		try {
+			if (op.kind === "enable") {
+				await this.runEncryptionOp(op, (e) => e.enableEncryption(op.folder, pw));
+			} else if (op.kind === "change") {
+				const old = this.secrets.getOld(op.folder);
+				if (!old) {
+					new Notice(`Can't resume the password change for ${op.folder}: the old password is missing`, 15_000);
+					return;
+				}
+				if (await this.runEncryptionOp(op, (e) => e.changeEncryptionPassword(op.folder, old, pw))) {
+					this.secrets.clearOld(op.folder);
+				}
+			} else if (await this.runEncryptionOp(op, (e) => e.removeEncryption(op.folder, pw))) {
+				this.settings.encryptedFolders = (this.settings.encryptedFolders ?? []).filter((f) => f !== op.folder);
+				this.secrets.clear(op.folder);
+				await this.saveSettings();
+			}
+		} catch (e) {
+			new Notice(`Can't resume the encryption change for ${op.folder}: ${e instanceof Error ? e.message : String(e)}`, 15_000);
+		}
+	}
+
 	private updateRibbon(state: "idle" | "syncing" | "error", errorLabel?: string): void {
 		if (this.mobileActionEl) {
 			if (state === "syncing") {
@@ -505,7 +679,14 @@ export default class CloudSyncPlugin extends Plugin {
 				this.currentStage = "idle";
 				setIcon(iconSpan, "cloud");
 				const last = this.settings.syncState.lastSyncTime;
-				textSpan.setText(last ? `Synced ${relativeTime(last)}` : "Cloud Sync");
+				const locked = this.lockedFolders.length;
+				textSpan.setText(
+					(last ? `Synced ${relativeTime(last)}` : "Cloud Sync") + (locked ? ` · ${locked} locked` : "")
+				);
+				this.statusBarEl.setAttribute(
+					"aria-label",
+					locked ? this.lockedFolders.map((l) => l.reason).join("\n") : "Click to sync"
+				);
 				this.statusBarEl.classList.remove("cloud-sync-syncing", "cloud-sync-error");
 				break;
 			}

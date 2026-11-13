@@ -32,3 +32,6 @@ jobs:
 
       - name: Build Obsidian plugin (tsc + esbuild)
         run: npm run build --workspace=packages/obsidian-plugin
+
+      - name: Typecheck Tauri app (TypeScript only; Rust builds on release)
+        run: npx tsc --noEmit -p packages/tauri-app/tsconfig.json

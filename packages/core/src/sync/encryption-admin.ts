@@ -48,6 +48,10 @@ export interface EncryptionAdminOptions {
 	onProgress?: (message: string) => void;
 }
 
+export type EncryptionProbe =
+	| { state: "not-encrypted" }
+	| { state: "encrypted"; passwordOk: boolean; changeInProgress: boolean };
+
 // A key generation: null keys = plaintext
 type Gen = FolderKeys | null;
 
@@ -84,6 +88,19 @@ export class EncryptionAdmin {
 	}
 
 	// ---------- operations ----------
+
+	async probe(folder: string, password: string): Promise<EncryptionProbe> {
+		this.checkFolder(folder);
+		const existing = await this.readKeyFile(folder, await this.provider.listAllFiles());
+		if (!existing) return { state: "not-encrypted" };
+		let passwordOk = true;
+		try {
+			await unlockKeyFile(existing.keyFile, password);
+		} catch {
+			passwordOk = false;
+		}
+		return { state: "encrypted", passwordOk, changeInProgress: existing.keyFile.rotation !== null };
+	}
 
 	async enable(folder: string, password: string): Promise<void> {
 		this.checkFolder(folder);

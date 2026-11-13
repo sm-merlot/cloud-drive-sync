@@ -176,6 +176,37 @@ When a file is modified both locally and on Drive between syncs, a results modal
 
 Bulk actions ("All Local", "All Remote") are available at the top.
 
+### Encrypted Folders
+
+You can encrypt chosen folders so the server only ever holds ciphertext: file contents, and file and subfolder names. Plaintext exists only on devices running the plugin with the folder's password. Requires Obsidian 1.11.4 or later; the password is kept in the OS keychain through Obsidian's secret storage, never in `data.json`.
+
+To set one up, open Settings → Cloud Drive Sync → **Encrypted folders** → **Add**, pick a folder and enter a password.
+
+- **First device:** this encrypts the folder in place.
+- **Other devices:** add the same folder with the same password to unlock it there.
+
+**Keep the password in a password manager.** If you lose it, the server copy of those notes can't be decrypted. There is no recovery key.
+
+**A device without the right password locks the folder.** Nothing in the folder is uploaded, downloaded or deleted on that device, and a notice says why (`No password for …`, `Wrong password for …`). Its local files are left alone, and it resumes when you enter the password.
+
+**Changing the password** re-encrypts the whole folder. Other devices lock until you enter the new password on them.
+
+**Removing encryption** decrypts the folder back to plaintext on the server.
+
+If Obsidian is closed while any of these operations runs, the operation resumes the next time it starts. Until then, the folder stays locked on every device.
+
+Before enabling:
+
+- **Update the plugin on every device first.** An older version doesn't know about encrypted folders. It sees the plaintext deleted on the server and downloads files with unreadable names.
+- **Old plaintext persists in history.** Server snapshots and backups taken before you enable encryption still contain the plaintext. Encryption only protects what's written afterwards.
+
+Limits:
+
+- Files of 80 MB or more can't be stored in an encrypted folder.
+- File and folder names must be at most 141 bytes in UTF-8 (about 140 Latin characters, or 47 CJK characters).
+- An external merge tool isn't offered for files in encrypted folders; the built-in merge is used instead.
+- The server can still see the folder's own name, how many files it holds, their sizes and when they change.
+
 ## OAuth Redirect Page
 
 The OAuth redirect page lives at `docs/index.html` and is hosted on **Cloudflare Pages** at `https://cloud-drive-sync.pages.dev/`, beside the privacy policy at `docs/privacy.html`.
