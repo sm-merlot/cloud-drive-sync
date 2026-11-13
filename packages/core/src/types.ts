@@ -56,6 +56,12 @@ export interface PluginSettings {
 	// An enable / password change / removal that hasn't finished; resumed on
 	// the next launch
 	pendingEncryptionOp?: { kind: "enable" | "change" | "remove"; folder: string };
+	// Encrypted-at-rest folders (DEV-390): folder → its key file JSON, cached
+	// so a folder can be unlocked offline. Key files hold nothing secret, and
+	// the password is never stored.
+	atRestFolders?: Record<string, string>;
+	// Lock at-rest folders after this many idle minutes
+	atRestIdleMinutes?: number;
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {

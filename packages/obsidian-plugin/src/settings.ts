@@ -2,7 +2,7 @@ import { App, ButtonComponent, Notice, Platform, PluginSettingTab, Setting } fro
 import { S3Provider } from "@cloud-drive-sync/core";
 import type CloudSyncPlugin from "./main";
 import { GoogleDriveAuth } from "./providers/google-drive/google-drive-auth";
-import { KEEP_PASSWORD_WARNING, PasswordFormModal } from "./encryption/encryption-modals";
+import { KEEP_PASSWORD_WARNING, PasswordFormModal, TextPromptModal } from "./encryption/encryption-modals";
 import { ObsidianHttpClient } from "./http/obsidian-http-client";
 
 export class CloudSyncSettingTab extends PluginSettingTab {
@@ -125,6 +125,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 		}
 
 		this.displayEncryptionSettings(containerEl);
+		this.displayAtRestSettings(containerEl);
 
 		// --- Debug ---
 		containerEl.createEl("h3", { text: "Debug" });
@@ -152,6 +153,59 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 			text: `Version: ${this.plugin.manifest.version}`,
 			cls: "setting-item-description",
 		});
+	}
+
+	private displayAtRestSettings(containerEl: HTMLElement): void {
+		containerEl.createEl("h3", { text: "Encrypted-at-rest folders" });
+		containerEl.createEl("p", {
+			cls: "setting-item-description",
+			text: "Stricter than encrypted folders: notes and their names stay encrypted on this device too, and open only in Private notes after you type the password. The password is never stored, and the folder locks itself when you leave the app. You give up Obsidian's search, backlinks, graph and Live Preview for these notes.",
+		});
+		containerEl.createEl("p", { cls: "setting-item-description mod-warning", text: KEEP_PASSWORD_WARNING });
+		const plugin = this.plugin;
+
+		for (const session of plugin.atRest.sessions.values()) {
+			new Setting(containerEl)
+				.setName(session.folder)
+				.setDesc(session.unlocked ? "Unlocked" : "Locked")
+				.addButton((b) => b.setButtonText("Open").onClick(() => void plugin.openPrivateNotes()));
+		}
+		new Setting(containerEl)
+			.setName("Create encrypted-at-rest folder")
+			.setDesc("A new, empty folder. Other devices pick it up at their next sync; unlock it there with the same password.")
+			.addButton((b) =>
+				b.setButtonText("Create").onClick(async () => {
+					const name = await new TextPromptModal(this.app, "New encrypted-at-rest folder name", "Private").openAndWait();
+					if (!name) return;
+					const r = await new PasswordFormModal(this.app, {
+						title: `Password for ${name}`,
+						warning: KEEP_PASSWORD_WARNING,
+						fields: [{ key: "password", label: "Password", confirm: true }],
+						submitText: "Create",
+					}).openAndWait();
+					if (!r) return;
+					try {
+						await plugin.createAtRestFolder(name.replace(/^\/+|\/+$/g, ""), r.values.password!);
+					} catch (e) {
+						new Notice(e instanceof Error ? e.message : String(e), 10_000);
+					}
+					this.display();
+				}),
+			);
+		new Setting(containerEl)
+			.setName("Auto-lock after (minutes)")
+			.setDesc("Locks after this long without using Private notes. Leaving the app always locks.")
+			.addText((t) =>
+				t.setPlaceholder("5")
+					.setValue(String(plugin.settings.atRestIdleMinutes ?? 5))
+					.onChange(async (v) => {
+						const n = parseInt(v, 10);
+						if (!isNaN(n) && n > 0) {
+							plugin.settings.atRestIdleMinutes = n;
+							await plugin.saveSettings();
+						}
+					}),
+			);
 	}
 
 	private displayEncryptionSettings(containerEl: HTMLElement): void {

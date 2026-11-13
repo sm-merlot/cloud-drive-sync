@@ -154,3 +154,49 @@ export class ConfirmModal extends Modal {
 		});
 	}
 }
+
+// Single text field; resolves the trimmed value, or null on cancel/empty
+export class TextPromptModal extends Modal {
+	private resolvePromise: ((v: string | null) => void) | null = null;
+	private value: string;
+
+	constructor(app: App, private title: string, initial: string) {
+		super(app);
+		this.value = initial;
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.createEl("h2", { text: this.title });
+		new Setting(contentEl).addText((t) => {
+			t.setValue(this.value).onChange((v) => (this.value = v));
+			t.inputEl.style.width = "100%";
+			t.inputEl.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") this.finish(this.value.trim() || null);
+			});
+			window.setTimeout(() => t.inputEl.select(), 0);
+		});
+		new Setting(contentEl)
+			.addButton((b) => b.setButtonText("Cancel").onClick(() => this.finish(null)))
+			.addButton((b) => b.setButtonText("OK").setCta().onClick(() => this.finish(this.value.trim() || null)));
+	}
+
+	private finish(v: string | null): void {
+		this.resolvePromise?.(v);
+		this.resolvePromise = null;
+		this.close();
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		this.resolvePromise?.(null);
+		this.resolvePromise = null;
+	}
+
+	openAndWait(): Promise<string | null> {
+		return new Promise((resolve) => {
+			this.resolvePromise = resolve;
+			this.open();
+		});
+	}
+}

@@ -174,6 +174,15 @@ export class AtRestSession {
 		await this.fs.writeFile(this.root, disk, await encryptAtRest(keys, plainPath, plaintext));
 	}
 
+	// Decrypted path of a file or folder on disk; throws if it isn't one of ours
+	async plainPathOf(diskPath: string): Promise<string> {
+		return (await fromAtRestPath(this.requireKeys(), this.folder, diskPath)).plainPath;
+	}
+
+	async diskPathOf(plainPath: string, isFile: boolean): Promise<string> {
+		return toAtRestPath(this.requireKeys(), this.folder, plainPath, isFile);
+	}
+
 	async exists(plainPath: string): Promise<boolean> {
 		const keys = this.requireKeys();
 		const asFile = await toAtRestPath(keys, this.folder, plainPath, true);

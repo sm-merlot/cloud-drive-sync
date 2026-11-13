@@ -63,6 +63,14 @@ describe("AtRestSession", () => {
 		for (const p of fs.files.keys()) expect(p).toMatch(/^Journal\/([a-z2-7]+\/)*[a-z2-7]+\.cdse$/);
 	});
 
+	it("maps between disk and plain paths", async () => {
+		await session.unlock("pw1");
+		const disk = await session.diskPathOf("Journal/x.md", true);
+		expect(disk).toMatch(/\.cdse$/);
+		expect(await session.plainPathOf(disk)).toBe("Journal/x.md");
+		await expect(session.plainPathOf("Journal/plain.md")).rejects.toThrow();
+	});
+
 	it("refuses to create over an existing note or folder", async () => {
 		await session.unlock("pw1");
 		await session.createNote("Journal/a.md");
