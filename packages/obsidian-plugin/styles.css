@@ -42,3 +42,4 @@
 .cds-encrypted-editor .cm-content { max-width: var(--file-line-width); margin: 0 auto; padding: 16px 0; caret-color: var(--text-normal); }
 .cds-encrypted-editor .cm-editor.cm-focused { outline: none; }
 .cds-encrypted-locked { padding: 24px; text-align: center; color: var(--text-muted); }
+.cds-encrypted-editor .cds-wikilink { color: var(--link-color); }
