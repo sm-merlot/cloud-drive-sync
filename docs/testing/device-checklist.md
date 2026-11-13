@@ -90,6 +90,40 @@ Use a disposable password for this run, not one you use elsewhere.
       **✕ Forget on this device** next to the folder. After that it syncs
       `Journal` as plain files again, with no deletes.
 
+## 4b. Encrypted-at-rest folders (Private notes)
+
+- [ ] Mac: Settings → **Encrypted-at-rest folders** → **Create** a folder named `Private`,
+      with a disposable password. Private notes opens, and the folder is unlocked.
+- [ ] The `Private` folder isn't visible in Obsidian's file explorer.
+- [ ] Private notes: create `2026-01-01 secret.md` containing `CANARY-AT-REST`, a
+      subfolder `Health`, and inside it a note that links `[[2026-01-01 secret]]`.
+      Also drop in an image, `pic.png`: use the panel's Encrypt on it, or skip
+      this if you have no image handy.
+- [ ] **Leak check, Mac disk:** in the vault folder, run
+      `grep -r CANARY-AT-REST .` and `find Private`. There are no matches, and
+      only base32 `.cdse` names. Also check `.obsidian/workspace.json`: there are
+      no plaintext titles.
+- [ ] **Leak check, server:** the same `grep` over the test bucket finds nothing.
+- [ ] Reading view: the link opens the other note, and the image shows.
+      Clicking a link to a note that doesn't exist shows a notice and creates
+      no file.
+- [ ] **Auto-lock:** set it to 1 minute and leave the app idle. The open note
+      closes and the panel shows Unlock.
+- [ ] **Background lock (iPhone):** unlock, open a note, switch to another app
+      and come back. It's locked.
+- [ ] Edit a note and lock with the command immediately. After unlocking, the
+      edit is there.
+- [ ] iPhone: sync. `Private` appears in Private notes, locked. Unlock it with
+      the password, and the notes match the Mac.
+- [ ] A device that never gets the password still syncs: the files are there,
+      but its Private notes shows the folder as locked.
+- [ ] Rename and move a note and a subfolder on the iPhone. The Mac shows the
+      same tree after syncing, with no duplicates.
+- [ ] **Stray plaintext:** using Finder, copy a `.md` file into the vault's
+      `Private` folder. Sync reports "Not uploaded: unencrypted file…" and the
+      server never gets it. In Private notes, use **Encrypt**, and the warning
+      clears.
+
 ## 5. Clean up
 
 - [ ] Delete the `CDS Test` vault on each device, or keep it for the next run.

@@ -207,6 +207,25 @@ Limits:
 - An external merge tool isn't offered for files in encrypted folders; the built-in merge is used instead.
 - The server can still see the folder's own name, how many files it holds, their sizes and when they change.
 
+### Encrypted-at-rest Folders (Private notes)
+
+An encrypted-at-rest folder is stricter than an encrypted folder: its notes and their names stay encrypted **on the device as well**, not only on the server. They open only in the **Private notes** panel, after you type the folder's password, and they're decrypted in memory only.
+
+To create one: Settings → Cloud Drive Sync → **Encrypted-at-rest folders** → **Create**. Choose a new folder name and a password. Other devices pick the folder up at their next sync. It's locked there until you unlock it, with the same password, from Private notes (the ribbon lock icon, or the **Open private notes** command).
+
+- **The password is never stored.** You type it every time you unlock. Keep it in 1Password: if you lose it, the notes are gone, on every device.
+- **The folder locks itself** after a few idle minutes (set in Settings; the default is 5), whenever you leave the app, on **Lock private notes**, and when another device changes the password. Unsaved edits are saved first.
+- **Devices without the password still sync the folder** as encrypted files, so every device keeps a backup it can't read.
+- **The real folder is hidden** from Obsidian's file explorer, and its files are named like `ab3k…q7xm.cdse`.
+
+What you give up in these folders:
+
+- Live Preview: the editor is plain text, with a reading view.
+- Obsidian search, backlinks, graph, tags and other plugins such as Dataview.
+- Links into the folder from normal notes. `[[links]]` between private notes do work.
+
+If a plaintext file ends up inside the folder (for example, copied in by hand), it is **never uploaded**. Private notes flags it and offers to encrypt it.
+
 ## OAuth Redirect Page
 
 The OAuth redirect page lives at `docs/index.html` and is hosted on **Cloudflare Pages** at `https://cloud-drive-sync.pages.dev/`, beside the privacy policy at `docs/privacy.html`.
