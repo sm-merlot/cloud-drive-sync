@@ -7,7 +7,7 @@ import type { FirstSyncStrategy, SyncIssue, SyncIssueResolution, SyncUIPort } fr
 import { computeMD5 } from "../util/hash";
 import { getFileName, getParentPath, guessMimeType, isDotPath, shouldExclude } from "../util/path";
 import { merge2way } from "../util/merge";
-import { isProbablyText } from "../util/binary-guard";
+import { isLineMergeable } from "../util/binary-guard";
 import { HASH_VERIFY_THRESHOLD_BYTES, MULTIPART_THRESHOLD_BYTES } from "../util/constants";
 import { CONTENT_OVERHEAD_BYTES } from "../crypto/folder-crypto";
 import { EncryptionAdmin, EncryptionAdminError, type EncryptionAdminOptions, type EncryptionProbe } from "./encryption-admin";
@@ -685,8 +685,8 @@ export class SyncEngine {
 		if (this.settings.conflictStrategy === "smart-merge") {
 			const mimeType = guessMimeType(path);
 			remoteContent ??= await this.downloadPlain(remote);
-			if (!isProbablyText(localContent, mimeType) || !isProbablyText(remoteContent, mimeType)) {
-				// Binary content — a line merge would corrupt it
+			if (!isLineMergeable(path, localContent, mimeType) || !isLineMergeable(path, remoteContent, mimeType)) {
+				// Binary or encrypted content — a line merge would corrupt it
 				return conflictIssue;
 			}
 			const localText = new TextDecoder().decode(localContent);
@@ -821,8 +821,8 @@ export class SyncEngine {
 		const localBytes = await this.fs.readFile(this.root, vaultPath);
 		const localContent = toArrayBuffer(localBytes);
 		const remoteContent = await this.downloadPlain(remote);
-		if (!isProbablyText(localContent, mimeType) || !isProbablyText(remoteContent, mimeType)) {
-			this.onNotice?.(`Cannot merge binary file: ${vaultPath}`);
+		if (!isLineMergeable(vaultPath, localContent, mimeType) || !isLineMergeable(vaultPath, remoteContent, mimeType)) {
+			this.onNotice?.(`Cannot merge ${vaultPath}: binary or encrypted file. Choose Local or Remote instead.`);
 			return;
 		}
 
