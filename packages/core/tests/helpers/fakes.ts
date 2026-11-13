@@ -83,6 +83,7 @@ export class FakeProvider implements CloudProvider {
 			mimeType: "application/octet-stream",
 			isFolder: false,
 			parentId: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "",
+			size: o.bytes.byteLength,
 		}));
 		for (const f of this.folders) {
 			files.push({

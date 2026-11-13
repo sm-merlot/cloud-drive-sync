@@ -62,6 +62,7 @@ export class S3Provider implements CloudProvider {
 				mimeType: guessMimeType(name),
 				isFolder: false,
 				parentId: parentPath,
+				size: obj.size,
 			});
 		}
 

@@ -757,6 +757,95 @@ describe("at-rest conflicts: merged in memory when unlocked (DEV-395)", () => {
 	});
 });
 
+describe("encrypted folders: mobile size limit", () => {
+	let provider: FakeProvider;
+	const body = "x".repeat(100);
+
+	beforeEach(async () => {
+		provider = makeProvider();
+		await writeKeyFile(provider, "pw1");
+	});
+
+	it("downloads are judged on ciphertext size, what is actually fetched", async () => {
+		const a = device(provider, "pw1");
+		a.fs.setFile("Journal/big.md", body, tick());
+		await a.engine.sync();
+		const [key] = remoteKeysUnder(provider, FOLDER);
+		const cipherSize = provider.objects.get(key!)!.bytes.byteLength;
+		expect(cipherSize).toBeGreaterThan(body.length);
+
+		// limit fits the plaintext but not the ciphertext
+		const b = device(provider, "pw1", { maxFileSize: body.length });
+		const r = await b.engine.sync();
+		expect(r.downloaded).toBe(0);
+		expect(r.tooBig).toEqual([{ vaultPath: "Journal/big.md", type: "too-big", size: cipherSize }]);
+		expect(b.fs.files.has("Journal/big.md")).toBe(false);
+		expect(b.store.getRecord("Journal/big.md")).toBeUndefined();
+
+		// still remote-only next time, never read as a local delete
+		const again = await b.engine.sync();
+		expect(again.tooBig.map((i) => i.vaultPath)).toEqual(["Journal/big.md"]);
+		expect(provider.deleted).toEqual([]);
+		expect(provider.objects.has(key!)).toBe(true);
+	});
+
+	it("uploads are judged on plaintext size, what is read from disk", async () => {
+		const a = device(provider, "pw1", { maxFileSize: body.length - 1 });
+		a.fs.setFile("Journal/big.md", body, tick());
+		a.fs.setFile("Journal/small.md", "ok", tick());
+		const r = await a.engine.sync();
+		expect(r.uploaded).toBe(1);
+		expect(r.tooBig).toEqual([{ vaultPath: "Journal/big.md", type: "too-big", size: body.length }]);
+		expect(remoteKeysUnder(provider, FOLDER)).toHaveLength(1);
+		expect(a.store.getRecord("Journal/big.md")).toBeUndefined();
+	});
+});
+
+describe("at-rest folders: mobile size limit", () => {
+	it("an oversized conflict is reported too big, never decrypted or surfaced", async () => {
+		const provider = makeProvider();
+		const created = await createKeyFile("pw", { iterations: 1000, mode: "at-rest" });
+		provider.setObject(KEY_PATH, serializeKeyFile(created.keyFile), tick());
+		const mk = (lastSyncTime?: number) => {
+			const d = device(provider, null, { configured: false, lastSyncTime });
+			const session = new AtRestSession(d.fs, "", FOLDER, created.keyFile);
+			d.engine = new SyncEngine(d.fs, "/root", provider, d.store, d.ui, {
+				conflictStrategy: "smart-merge", excludePatterns: [],
+				atRestCodec: atRestCodec(() => session),
+			});
+			d.engine.onNotice = (m) => d.notices.push(m);
+			return { d, session };
+		};
+		const A = mk();
+		await A.session.unlock("pw");
+		await A.session.write("Journal/n.md", new TextEncoder().encode("line 1\n"));
+		await A.d.engine.sync();
+		const path = await A.session.diskPathOf("Journal/n.md", true);
+		const B = mk(0);
+		await B.d.engine.sync();
+		await B.session.unlock("pw");
+
+		await A.session.write("Journal/n.md", new TextEncoder().encode("A ".repeat(200)));
+		for (const v of A.d.fs.files.values()) v.mtimeMs = tick();
+		await A.d.engine.sync();
+
+		// B's next sync runs with a limit smaller than either side (400+ bytes)
+		const p = new SyncEngine(B.d.fs, "/root", provider, B.d.store, B.d.ui, {
+			conflictStrategy: "smart-merge", excludePatterns: [], maxFileSize: 300,
+			atRestCodec: atRestCodec(() => B.session),
+		});
+		await B.session.write("Journal/n.md", new TextEncoder().encode("B ".repeat(200)));
+		for (const v of B.d.fs.files.values()) v.mtimeMs = tick();
+		const before = B.d.fs.files.get(path)!.bytes;
+
+		const r = await p.sync();
+		expect(r.tooBig.map((i) => i.vaultPath)).toEqual([path]);
+		expect(B.d.ui.surfacedIssues).toEqual([]);
+		expect(B.d.fs.files.get(path)!.bytes).toEqual(before);
+		expect(r.conflicts).toBe(0);
+	});
+});
+
 describe("at-rest conflicts never reach an external merge tool", () => {
 	it("an external resolution on a .cdse file uses the in-app merge", async () => {
 		const provider = makeProvider();

@@ -264,7 +264,7 @@ async function runSync(): Promise<void> {
 	}
 
 	syncing = true;
-	const total: SyncResult = { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [], lockedFolders: [], atRestFolders: [] };
+	const total: SyncResult = { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [], lockedFolders: [], atRestFolders: [], tooBig: [] };
 	let lastError = "";
 	try {
 		for (const pair of settings.pairs) {
@@ -278,6 +278,7 @@ async function runSync(): Promise<void> {
 				total.errors += r.errors;
 				total.failures.push(...r.failures);
 				total.lockedFolders.push(...r.lockedFolders);
+				total.tooBig.push(...r.tooBig);
 			} catch (e) {
 				total.errors++;
 				lastError = e instanceof Error ? e.message : String(e);

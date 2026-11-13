@@ -3,6 +3,10 @@ import type { ConflictResolution, SyncIssue, SyncIssueResolution } from "@cloud-
 
 export type { SyncIssue, SyncIssueResolution };
 
+function formatSize(bytes: number): string {
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export class SyncResultsModal extends Modal {
 	private issues: SyncIssue[];
 	private resolutions: Map<string, SyncIssueResolution> = new Map();
@@ -22,15 +26,19 @@ export class SyncResultsModal extends Modal {
 		const { contentEl } = this;
 		contentEl.addClass("cloud-sync-results-modal");
 
-		contentEl.createEl("h2", { text: "Sync Results" });
-		contentEl.createEl("p", {
-			text: `${this.issues.length} file(s) need attention`,
-			cls: "cloud-sync-results-subtitle",
-		});
-
 		const conflicts = this.issues.filter((i) => i.type === "conflict");
 		const deleteConflicts = this.issues.filter((i) => i.type === "delete-conflict");
 		const errors = this.issues.filter((i) => i.type === "error");
+		const tooBig = this.issues.filter((i) => i.type === "too-big");
+		const actionable = conflicts.length + deleteConflicts.length + errors.length;
+
+		contentEl.createEl("h2", { text: "Sync Results" });
+		contentEl.createEl("p", {
+			text: actionable > 0
+				? `${actionable} file(s) need attention`
+				: `${tooBig.length} file(s) not synced on this device`,
+			cls: "cloud-sync-results-subtitle",
+		});
 
 		if (deleteConflicts.length > 0) {
 			contentEl.createEl("h3", { text: `Delete conflicts (${deleteConflicts.length})` });
@@ -92,6 +100,28 @@ export class SyncResultsModal extends Modal {
 			for (const issue of errors) {
 				this.renderErrorRow(contentEl, issue);
 			}
+		}
+
+		if (tooBig.length > 0) {
+			contentEl.createEl("h3", { text: `Too big for this device (${tooBig.length})` });
+			contentEl.createEl("p", {
+				text: "Over the mobile file size limit in Cloud Sync settings, so not downloaded or uploaded here. They stay as they are on both sides; sync them from a desktop.",
+				cls: "cloud-sync-results-desc",
+			});
+			for (const issue of tooBig) {
+				new Setting(contentEl)
+					.setName(issue.vaultPath)
+					.setDesc(issue.size !== undefined ? formatSize(issue.size) : "");
+			}
+		}
+
+		if (actionable === 0) {
+			contentEl.createEl("div", { cls: "cloud-sync-results-footer" }, (el) => {
+				new Setting(el).addButton((btn) =>
+					btn.setButtonText("Close").setCta().onClick(() => this.finish())
+				);
+			});
+			return;
 		}
 
 		// Done button

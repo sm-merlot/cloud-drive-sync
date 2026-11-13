@@ -21,6 +21,8 @@ interface DriveFile {
 	modifiedTime: string;
 	md5Checksum?: string;
 	parents?: string[];
+	// int64 as a decimal string; absent for folders and Google-native docs
+	size?: string;
 }
 
 interface DriveListResponse {
@@ -47,7 +49,7 @@ export class GoogleDriveApi {
 		do {
 			const params = new URLSearchParams({
 				q: `'${folderId}' in parents and trashed=false`,
-				fields: "nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents)",
+				fields: "nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,parents,size)",
 				pageSize: "1000",
 			});
 			if (pageToken) params.set("pageToken", pageToken);
@@ -170,6 +172,7 @@ export class GoogleDriveApi {
 						mimeType: f.mimeType,
 						isFolder: false,
 						parentId: f.parents?.[0] || item.folderId,
+						size: f.size !== undefined && Number.isFinite(Number(f.size)) ? Number(f.size) : undefined,
 					});
 				}
 			}

@@ -57,7 +57,7 @@ export function makeProvider(): FakeProvider {
 export function device(
 	provider: FakeProvider,
 	password: string | null,
-	opts: { configured?: boolean; strategy?: ConflictStrategy; lastSyncTime?: number; encryption?: boolean; unlockCache?: UnlockCache } = {},
+	opts: { configured?: boolean; strategy?: ConflictStrategy; lastSyncTime?: number; encryption?: boolean; unlockCache?: UnlockCache; maxFileSize?: number } = {},
 ): Device {
 	const fs = new FakeLocalFs();
 	const { store } = makeState([], opts.lastSyncTime ?? 1000);
@@ -67,6 +67,7 @@ export function device(
 	dev.engine = new SyncEngine(fs, "/root", provider, store, ui, {
 		conflictStrategy: opts.strategy ?? "prompt",
 		excludePatterns: [],
+		maxFileSize: opts.maxFileSize,
 		encryption: opts.encryption === false ? undefined : {
 			folders: opts.configured === false ? [] : [FOLDER],
 			passwordFor: (f) => (f === FOLDER ? dev.password : null),
