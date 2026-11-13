@@ -17,6 +17,7 @@ import {
 	decryptName,
 	encryptContent,
 	encryptName,
+	folderMode,
 	hasKeyTag,
 	parseKeyFile,
 	serializeKeyFile,
@@ -76,6 +77,22 @@ describe("key file", () => {
 		["future version", JSON.stringify({ format: "cds-folder-key", version: 2 })],
 	])("rejects malformed key files: %s", (_label, body) => {
 		expect(() => parseKeyFile(body)).toThrow(KeyFileFormatError);
+	});
+
+	it("records the at-rest mode; old key files without a mode read as transit", async () => {
+		const { keyFile } = await createKeyFile("pw", { ...FAST, mode: "at-rest" });
+		const parsed = parseKeyFile(serializeKeyFile(keyFile));
+		expect(parsed.mode).toBe("at-rest");
+		expect(folderMode(parsed)).toBe("at-rest");
+		const { keyFile: legacy } = await createKeyFile("pw", FAST);
+		expect("mode" in legacy).toBe(false); // byte-compatible with older plugins
+		expect(folderMode(parseKeyFile(serializeKeyFile(legacy)))).toBe("transit");
+	});
+
+	it("rejects an unknown mode instead of guessing", async () => {
+		const { keyFile } = await createKeyFile("pw", FAST);
+		const bad = JSON.stringify({ ...keyFile, mode: "quantum" });
+		expect(() => parseKeyFile(bad)).toThrow(KeyFileFormatError);
 	});
 
 	it("rejects an unsupported KDF", async () => {

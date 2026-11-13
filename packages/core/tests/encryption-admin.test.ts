@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { isEncryptedContent, parseKeyFile } from "../src/crypto/folder-crypto";
+import { createKeyFile, isEncryptedContent, parseKeyFile, serializeKeyFile } from "../src/crypto/folder-crypto";
 import { UnlockCache } from "../src/sync/folder-encryption";
 import type { FakeProvider } from "./helpers/fakes";
 import {
@@ -348,5 +348,19 @@ describe("probe and unlock cache", () => {
 		const downloads = provider.downloadCalls;
 		await second.engine.sync();
 		expect(provider.downloadCalls).toBe(downloads);
+	});
+});
+
+describe("transit operations refuse at-rest folders", () => {
+	it("change password and remove are refused", async () => {
+		const provider = makeProvider();
+		const { keyFile } = await createKeyFile("pw1", { iterations: 1000, mode: "at-rest" });
+		provider.setObject(KEY_PATH, serializeKeyFile(keyFile), tick());
+		const a = device(provider, null, { configured: false });
+		const before = new Map(provider.objects);
+		await expect(a.engine.changeEncryptionPassword(FOLDER, "pw1", "pw2", FAST)).rejects.toThrow("at-rest");
+		await expect(a.engine.removeEncryption(FOLDER, "pw1")).rejects.toThrow("at-rest");
+		await expect(a.engine.enableEncryption(FOLDER, "pw1", FAST)).rejects.toThrow("already encrypted");
+		expect(provider.objects).toEqual(before);
 	});
 });

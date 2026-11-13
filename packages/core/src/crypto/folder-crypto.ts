@@ -95,7 +95,18 @@ export interface FolderKeyFile {
 	keyId: string; // base32
 	kdf: { name: "PBKDF2-SHA256"; iterations: number; salt: string }; // salt base64
 	check: { nonce: string; ciphertext: string }; // base64
+	// Absent = "transit" (key files written before at-rest existed)
+	mode?: FolderMode;
 	rotation: KeyFileRotation | null;
+}
+
+// transit: plaintext on devices, encrypted by the sync engine on the way to
+// the server. at-rest: encrypted on devices too; the engine syncs the files
+// as opaque bytes and our own viewer decrypts them in memory.
+export type FolderMode = "transit" | "at-rest";
+
+export function folderMode(keyFile: { mode?: FolderMode }): FolderMode {
+	return keyFile.mode ?? "transit";
 }
 
 export interface FolderKeys {
@@ -180,7 +191,7 @@ function checkPlaintext(keyId: string): Bytes {
 
 export async function createKeyFile(
 	password: string,
-	opts: { iterations?: number; rotation?: KeyFileRotation | null } = {},
+	opts: { iterations?: number; rotation?: KeyFileRotation | null; mode?: FolderMode } = {},
 ): Promise<{ keyFile: FolderKeyFile; keys: FolderKeys }> {
 	if (!password) throw new Error("Password must not be empty");
 	const iterations = opts.iterations ?? DEFAULT_PBKDF2_ITERATIONS;
@@ -202,6 +213,7 @@ export async function createKeyFile(
 		keyId,
 		kdf: { name: "PBKDF2-SHA256", iterations, salt: base64Encode(salt) },
 		check: { nonce: base64Encode(nonce), ciphertext: base64Encode(new Uint8Array(ct)) },
+		...(opts.mode === "at-rest" ? { mode: "at-rest" as const } : {}),
 		rotation: opts.rotation ?? null,
 	};
 	return { keyFile, keys };
@@ -244,12 +256,18 @@ function parseKeyFileObject(raw: unknown, allowRotation: boolean): FolderKeyFile
 		throw new KeyFileFormatError("missing check value");
 	}
 
+	// An unknown mode is from a newer plugin: refuse rather than guess, so the
+	// folder locks instead of being synced the wrong way.
+	if (o.mode !== undefined && o.mode !== "transit" && o.mode !== "at-rest") {
+		throw new KeyFileFormatError(`unsupported mode ${String(o.mode)}; update the plugin`);
+	}
 	const base = {
 		format: KEY_FILE_FORMAT as typeof KEY_FILE_FORMAT,
 		version: KEY_FILE_VERSION,
 		keyId: o.keyId,
 		kdf: { name: "PBKDF2-SHA256" as const, iterations: kdf.iterations, salt: kdf.salt },
 		check: { nonce: check.nonce, ciphertext: check.ciphertext },
+		...(o.mode !== undefined ? { mode: o.mode as FolderMode } : {}),
 	};
 	if (!allowRotation) return base;
 

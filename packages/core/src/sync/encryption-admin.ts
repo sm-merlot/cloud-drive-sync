@@ -28,6 +28,7 @@ import {
 	decryptName,
 	encryptContent,
 	encryptName,
+	folderMode,
 	parseKeyFile,
 	serializeKeyFile,
 	unlockKeyFile,
@@ -139,6 +140,7 @@ export class EncryptionAdmin {
 		let listing = await this.provider.listAllFiles();
 		let existing = await this.readKeyFile(folder, listing);
 		if (!existing) throw new EncryptionAdminError(`${folder} is not encrypted (no key file)`);
+		this.checkTransit(folder, existing.keyFile);
 
 		let oldKeys: FolderKeys;
 		let newKeys: FolderKeys;
@@ -174,6 +176,7 @@ export class EncryptionAdmin {
 		let listing = await this.provider.listAllFiles();
 		let existing = await this.readKeyFile(folder, listing);
 		if (!existing) throw new EncryptionAdminError(`${folder} is not encrypted (no key file)`);
+		this.checkTransit(folder, existing.keyFile);
 
 		const rotation = existing.keyFile.rotation;
 		if (rotation && !rotation.toPlaintext) {
@@ -201,6 +204,14 @@ export class EncryptionAdmin {
 	private checkFolder(folder: string): void {
 		if (!folder || folder.startsWith("/") || folder.endsWith("/") || isDotPath(folder)) {
 			throw new EncryptionAdminError(`Invalid folder: ${folder || "(vault root)"}`);
+		}
+	}
+
+	// These operations rewrite objects on the server in the transit layout. An
+	// at-rest folder's layout is owned by its devices (DEV-396).
+	private checkTransit(folder: string, keyFile: FolderKeyFile): void {
+		if (folderMode(keyFile) !== "transit") {
+			throw new EncryptionAdminError(`${folder} is an encrypted-at-rest folder; use its own settings`);
 		}
 	}
 

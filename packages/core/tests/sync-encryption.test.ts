@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { computeMD5 } from "../src/util/hash";
 import { MULTIPART_THRESHOLD_BYTES } from "../src/util/constants";
-import { isEncryptedContent } from "../src/crypto/folder-crypto";
+import { createKeyFile, isEncryptedContent, serializeKeyFile, type FolderKeys } from "../src/crypto/folder-crypto";
+import { encryptAtRest, toAtRestPath } from "../src/crypto/at-rest";
+import { UnlockCache } from "../src/sync/folder-encryption";
 import type { ConflictStrategy } from "../src/types";
 import type { FakeProvider } from "./helpers/fakes";
 import {
@@ -437,5 +439,98 @@ describe("encrypted folders: locked devices never touch the folder", () => {
 		expect(r.errors).toBe(0);
 		expect(r.deleted).toBe(0);
 		expect(text(b.fs.files.get("Journal/two.md")?.bytes)).toBe("two");
+	});
+});
+
+describe("at-rest folders: the engine syncs them as opaque files", () => {
+	let provider: FakeProvider;
+	let keys: FolderKeys;
+	const notes: Record<string, string> = { "Journal/a.md": "secret a", "Journal/Sub/b.md": "secret b" };
+	const onDisk = new Map<string, Uint8Array>(); // at-rest path → ciphertext
+
+	beforeEach(async () => {
+		provider = makeProvider();
+		const created = await createKeyFile("pw1", { iterations: 1000, mode: "at-rest" });
+		keys = created.keys;
+		provider.setObject(KEY_PATH, serializeKeyFile(created.keyFile), tick());
+		onDisk.clear();
+		for (const [plain, body] of Object.entries(notes)) {
+			const path = await toAtRestPath(keys, FOLDER, plain, true);
+			onDisk.set(path, await encryptAtRest(keys, plain, new TextEncoder().encode(body)));
+		}
+	});
+
+	function writer(opts: Parameters<typeof device>[2] = {}, password: string | null = null): Device {
+		const d = device(provider, password, opts);
+		for (const [p, bytes] of onDisk) d.fs.files.set(p, { bytes, mtimeMs: tick() });
+		return d;
+	}
+
+	it("a device without the password keeps a byte-identical encrypted copy", async () => {
+		const a = writer({ configured: false });
+		const ra = await a.engine.sync();
+		expect(ra.lockedFolders).toEqual([]);
+		expect(ra.uploaded).toBe(onDisk.size);
+		for (const [p, bytes] of onDisk) expect(provider.objects.get(p)?.bytes).toEqual(bytes);
+
+		const b = device(provider, null, { configured: false, lastSyncTime: 0 });
+		const rb = await b.engine.sync();
+		expect(rb.lockedFolders).toEqual([]);
+		for (const [p, bytes] of onDisk) expect(b.fs.files.get(p)?.bytes).toEqual(bytes);
+		for (const f of b.fs.files.values()) expect(text(f.bytes)).not.toContain("secret");
+
+		expect([(await a.engine.sync()).uploaded, (await b.engine.sync()).downloaded]).toEqual([0, 0]);
+	});
+
+	it("is never decrypted by the engine, even when configured with the password", async () => {
+		const a = writer({}, "pw1"); // FOLDER is in settings.folders and has a password
+		const r = await a.engine.sync();
+		expect(r.lockedFolders).toEqual([]);
+		expect(r.errors).toBe(0);
+		for (const [p, bytes] of onDisk) expect(provider.objects.get(p)?.bytes).toEqual(bytes);
+		expect([...provider.objects.keys()].some((k) => k.includes("Sub") || k.endsWith(".md"))).toBe(false);
+	});
+
+	it("a host with no encryption settings (Tauri) syncs it too", async () => {
+		const a = writer({ encryption: false });
+		const r = await a.engine.sync();
+		expect(r.lockedFolders).toEqual([]);
+		expect(r.uploaded).toBe(onDisk.size);
+	});
+
+	it("an edit is just new bytes: it propagates and then goes quiet", async () => {
+		const a = writer({ configured: false });
+		await a.engine.sync();
+		const b = device(provider, null, { configured: false, lastSyncTime: 0 });
+		await b.engine.sync();
+
+		const path = [...onDisk.keys()][0]!;
+		const edited = await encryptAtRest(keys, "Journal/a.md", new TextEncoder().encode("secret a, edited"));
+		a.fs.files.set(path, { bytes: edited, mtimeMs: tick() });
+		expect((await a.engine.sync()).uploaded).toBe(1);
+		expect((await b.engine.sync()).downloaded).toBe(1);
+		expect(b.fs.files.get(path)?.bytes).toEqual(edited);
+		expect((await b.engine.sync()).downloaded).toBe(0);
+	});
+
+	it("reads the key file once per ETag with a shared UnlockCache", async () => {
+		const cache = new UnlockCache();
+		const a = writer({ configured: false, unlockCache: cache });
+		await a.engine.sync();
+		const downloads = provider.downloadCalls;
+		const again = device(provider, null, { configured: false, unlockCache: cache });
+		again.fs.files = a.fs.files;
+		for (const [p, r] of Object.entries(a.store.getAllRecords())) again.store.setRecord(p, r);
+		await again.engine.sync();
+		expect(provider.downloadCalls).toBe(downloads);
+	});
+
+	it("a key file with a mode from a newer plugin locks the folder", async () => {
+		const { keyFile } = await createKeyFile("pw1", { iterations: 1000 });
+		provider.setObject(KEY_PATH, JSON.stringify({ ...keyFile, mode: "future-mode" }), tick());
+		const a = writer({ configured: false });
+		const r = await a.engine.sync();
+		expect(r.lockedFolders[0]?.reason).toMatch(/^Unreadable key file for Journal: .*unsupported mode/);
+		expect(r.uploaded).toBe(0);
 	});
 });
