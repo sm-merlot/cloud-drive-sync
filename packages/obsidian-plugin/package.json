@@ -12,6 +12,7 @@
 		"@cloud-drive-sync/core": "*"
 	},
 	"devDependencies": {
+		"@codemirror/commands": "^6.11.1",
 		"@types/node": "^22.0.0",
 		"builtin-modules": "^3.3.0",
 		"esbuild": "0.25.5",

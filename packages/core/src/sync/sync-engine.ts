@@ -9,7 +9,7 @@ import { getFileName, getParentPath, guessMimeType, isDotPath, shouldExclude } f
 import { merge2way } from "../util/merge";
 import { isLineMergeable } from "../util/binary-guard";
 import { HASH_VERIFY_THRESHOLD_BYTES, MULTIPART_THRESHOLD_BYTES } from "../util/constants";
-import { CONTENT_OVERHEAD_BYTES } from "../crypto/folder-crypto";
+import { CONTENT_OVERHEAD_BYTES, type FolderKeyFile } from "../crypto/folder-crypto";
 import { isAtRestFile } from "../crypto/at-rest";
 import { EncryptionAdmin, EncryptionAdminError, type EncryptionAdminOptions, type EncryptionProbe } from "./encryption-admin";
 import { FolderEncryption, type EncryptionSettings, type LockedFolder } from "./folder-encryption";
@@ -402,6 +402,16 @@ export class SyncEngine {
 	// Read-only; used by settings UIs before choosing enable vs. join.
 	probeEncryption(folder: string, password: string): Promise<EncryptionProbe> {
 		return new EncryptionAdmin(this.provider, this.stateStore).probe(folder, password);
+	}
+
+	// Create an empty encrypted-at-rest folder (writes its key file to the
+	// server) and return the key file for the host to cache.
+	async createAtRestFolder(folder: string, password: string, opts: EncryptionAdminOptions = {}): Promise<FolderKeyFile> {
+		let keyFile: FolderKeyFile | null = null;
+		await this.exclusive(async (admin) => {
+			keyFile = await admin.createAtRest(folder, password);
+		}, opts);
+		return keyFile!;
 	}
 
 	// Encrypt an existing folder in place. Calling it again with the same

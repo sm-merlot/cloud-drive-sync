@@ -328,8 +328,8 @@ describe("probe and unlock cache", () => {
 		await a.engine.sync();
 		expect(await a.engine.probeEncryption(FOLDER, "pw1")).toEqual({ state: "not-encrypted" });
 		await a.engine.enableEncryption(FOLDER, "pw1", FAST);
-		expect(await a.engine.probeEncryption(FOLDER, "pw1")).toEqual({ state: "encrypted", passwordOk: true, changeInProgress: false });
-		expect(await a.engine.probeEncryption(FOLDER, "nope")).toEqual({ state: "encrypted", passwordOk: false, changeInProgress: false });
+		expect(await a.engine.probeEncryption(FOLDER, "pw1")).toMatchObject({ state: "encrypted", passwordOk: true, changeInProgress: false });
+		expect(await a.engine.probeEncryption(FOLDER, "nope")).toMatchObject({ state: "encrypted", passwordOk: false, changeInProgress: false });
 	});
 
 	it("a shared UnlockCache skips the key file download on a new engine", async () => {
@@ -364,3 +364,25 @@ describe("transit operations refuse at-rest folders", () => {
 		expect(provider.objects).toEqual(before);
 	});
 });
+
+describe("create an at-rest folder", () => {
+	it("writes an at-rest key file, and probe reports the mode", async () => {
+		const provider = makeProvider();
+		const a = device(provider, null, { configured: false });
+		const kf = await a.engine.createAtRestFolder("Private", "pw1", FAST);
+		expect(kf.mode).toBe("at-rest");
+		expect(parseKeyFile(new TextDecoder().decode(provider.objects.get("Private/.cds-folder-key.json")!.bytes))).toEqual(kf);
+		const probe = await a.engine.probeEncryption("Private", "pw1");
+		expect(probe).toMatchObject({ state: "encrypted", passwordOk: true, mode: "at-rest" });
+		await expect(a.engine.createAtRestFolder("Private", "pw1", FAST)).rejects.toThrow("already encrypted");
+	});
+
+	it("refuses a folder that already has files on the server", async () => {
+		const provider = makeProvider();
+		provider.setObject("Diary/old.md", "plaintext", tick());
+		const a = device(provider, null, { configured: false });
+		await expect(a.engine.createAtRestFolder("Diary", "pw1", FAST)).rejects.toThrow("already has files");
+		expect(provider.objects.has("Diary/.cds-folder-key.json")).toBe(false);
+	});
+});
+

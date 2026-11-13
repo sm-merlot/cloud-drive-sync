@@ -12,7 +12,10 @@ import {
 	type PluginSettings,
 } from "@cloud-drive-sync/core";
 import { FolderSecrets } from "./encryption/folder-secrets";
-import { ConfirmModal } from "./encryption/encryption-modals";
+import { ConfirmModal, PasswordFormModal } from "./encryption/encryption-modals";
+import { AtRestManager, ENCRYPTED_NOTE_VIEW, PRIVATE_NOTES_VIEW } from "./at-rest/at-rest-manager";
+import { EncryptedNoteView } from "./at-rest/encrypted-note-view";
+import { PrivateNotesView } from "./at-rest/private-notes-view";
 import { CloudSyncSettingTab } from "./settings";
 import { FolderPickerModal } from "./sync/folder-picker-modal";
 import { GoogleDriveApi } from "./providers/google-drive/google-drive-api";
@@ -57,12 +60,33 @@ export default class CloudSyncPlugin extends Plugin {
 	// Survives engine rebuilds, so PBKDF2 runs once per folder per launch
 	private unlockCache = new UnlockCache();
 	lockedFolders: LockedFolder[] = [];
+	atRest!: AtRestManager;
 	// Lock notices already shown this session (folder + reason)
 	private shownLocks = new Set<string>();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.secrets = new FolderSecrets(this.app);
+		this.atRest = new AtRestManager(this);
+		this.atRest.load();
+		this.registerView(ENCRYPTED_NOTE_VIEW, (leaf) => new EncryptedNoteView(leaf, this));
+		this.registerView(PRIVATE_NOTES_VIEW, (leaf) => new PrivateNotesView(leaf, this));
+		this.registerExtensions(["cdse"], ENCRYPTED_NOTE_VIEW);
+		this.addCommand({ id: "open-private-notes", name: "Open private notes", callback: () => void this.openPrivateNotes() });
+		this.addCommand({
+			id: "lock-private-notes",
+			name: "Lock private notes",
+			callback: async () => {
+				await this.atRest.lockAll("manual");
+				new Notice("Private notes locked");
+			},
+		});
+		this.addRibbonIcon("lock", "Private notes", () => void this.openPrivateNotes());
+		// Leaving the app (phone to background, window minimized) locks
+		// everything at once.
+		this.registerDomEvent(document, "visibilitychange", () => {
+			if (document.visibilityState === "hidden") void this.atRest.lockAll("background");
+		});
 
 		this.addSettingTab(new CloudSyncSettingTab(this.app, this));
 
@@ -202,6 +226,7 @@ export default class CloudSyncPlugin extends Plugin {
 		try {
 			const result = await engine.syncPaths(paths);
 			this.noteLockedFolders(result.lockedFolders);
+			await this.atRest.onSynced(this.unlockCache);
 			this.updateStatusBar("idle");
 			this.updateRibbon("idle");
 		} catch (e) {
@@ -383,6 +408,7 @@ export default class CloudSyncPlugin extends Plugin {
 		try {
 			const result = await engine.sync();
 			this.noteLockedFolders(result.lockedFolders);
+			await this.atRest.onSynced(this.unlockCache);
 			this.currentStage = "idle";
 			this.updateStatusBar("idle");
 			this.updateRibbon("idle");
@@ -498,6 +524,51 @@ export default class CloudSyncPlugin extends Plugin {
 		new Notice(`Sync folder set to: ${chosen.name}`);
 	}
 
+	// ---------- encrypted-at-rest folders ----------
+
+	async openPrivateNotes(): Promise<void> {
+		const existing = this.app.workspace.getLeavesOfType(PRIVATE_NOTES_VIEW)[0];
+		const leaf = existing ?? this.app.workspace.getLeftLeaf(false) ?? this.app.workspace.getLeaf(true);
+		if (!existing) await leaf.setViewState({ type: PRIVATE_NOTES_VIEW, active: true });
+		this.app.workspace.revealLeaf(leaf);
+	}
+
+	// Ask for the password and unlock; true when unlocked
+	async unlockAtRest(folder: string): Promise<boolean> {
+		const session = this.atRest.sessions.get(folder);
+		if (!session) return false;
+		const r = await new PasswordFormModal(this.app, {
+			title: `Unlock ${folder}`,
+			fields: [{ key: "password", label: "Password" }],
+			submitText: "Unlock",
+		}).openAndWait();
+		if (!r) return false;
+		try {
+			await session.unlock(r.values.password!);
+		} catch {
+			new Notice(`Wrong password for ${folder}`);
+			return false;
+		}
+		this.atRest.notifyChanged();
+		return true;
+	}
+
+	// New empty at-rest folder: key file to the server, then cache it here
+	async createAtRestFolder(folder: string, password: string): Promise<void> {
+		if (this.syncInFlight) throw new Error("A sync is running. Try again when it finishes.");
+		const engine = this.requireEngine();
+		if (this.app.vault.getAbstractFileByPath(folder)) {
+			throw new Error(`${folder} already exists in this vault; pick a new folder name`);
+		}
+		const keyFile = await engine.createAtRestFolder(folder, password);
+		await this.app.vault.createFolder(folder);
+		const session = await this.atRest.register(folder, keyFile);
+		await session.unlock(password);
+		this.atRest.notifyChanged();
+		await this.openPrivateNotes();
+		new Notice(`${folder} created. Keep its password in 1Password; it's never stored on this device.`, 10_000);
+	}
+
 	// ---------- encrypted folders ----------
 
 	isEncryptedFolder(folder: string): boolean {
@@ -511,6 +582,9 @@ export default class CloudSyncPlugin extends Plugin {
 		if (this.syncInFlight) throw new Error("A sync is running. Try again when it finishes.");
 		const engine = this.requireEngine();
 		const probe = await engine.probeEncryption(folder, password);
+		if (probe.state === "encrypted" && probe.mode === "at-rest") {
+			throw new Error(`${folder} is an encrypted-at-rest folder. Open Private notes to unlock it.`);
+		}
 		if (probe.state === "encrypted") {
 			if (!probe.passwordOk) throw new Error(`Wrong password for ${folder}`);
 			this.secrets.set(folder, password);

@@ -34,6 +34,7 @@ import {
 	unlockKeyFile,
 	type FolderKeyFile,
 	type FolderKeys,
+	type FolderMode,
 } from "../crypto/folder-crypto";
 
 export class EncryptionAdminError extends Error {
@@ -51,7 +52,7 @@ export interface EncryptionAdminOptions {
 
 export type EncryptionProbe =
 	| { state: "not-encrypted" }
-	| { state: "encrypted"; passwordOk: boolean; changeInProgress: boolean };
+	| { state: "encrypted"; passwordOk: boolean; changeInProgress: boolean; mode: FolderMode; keyFile: FolderKeyFile };
 
 // A key generation: null keys = plaintext
 type Gen = FolderKeys | null;
@@ -100,7 +101,29 @@ export class EncryptionAdmin {
 		} catch {
 			passwordOk = false;
 		}
-		return { state: "encrypted", passwordOk, changeInProgress: existing.keyFile.rotation !== null };
+		return {
+			state: "encrypted",
+			passwordOk,
+			changeInProgress: existing.keyFile.rotation !== null,
+			mode: folderMode(existing.keyFile),
+			keyFile: existing.keyFile,
+		};
+	}
+
+	// A new, empty encrypted-at-rest folder: just its key file on the server.
+	// Converting a folder that already has files is DEV-396.
+	async createAtRest(folder: string, password: string): Promise<FolderKeyFile> {
+		this.checkFolder(folder);
+		const listing = await this.provider.listAllFiles();
+		this.checkNotNested(folder, listing);
+		if (await this.readKeyFile(folder, listing)) throw new EncryptionAdminError(`${folder} is already encrypted`);
+		if (this.objectsUnder(folder, listing).some((f) => !f.isFolder)) {
+			throw new EncryptionAdminError(`${folder} already has files on the server; pick a new folder name`);
+		}
+		const { keyFile } = await createKeyFile(password, { iterations: this.opts.iterations, mode: "at-rest" });
+		await this.ensureRemoteFolder(folder, listing);
+		await this.writeKeyFile(folder, keyFile, null);
+		return keyFile;
 	}
 
 	async enable(folder: string, password: string): Promise<void> {
