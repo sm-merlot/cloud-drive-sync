@@ -264,7 +264,7 @@ async function runSync(): Promise<void> {
 	}
 
 	syncing = true;
-	const total: SyncResult = { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [], lockedFolders: [] };
+	const total: SyncResult = { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [], lockedFolders: [], atRestFolders: [] };
 	let lastError = "";
 	try {
 		for (const pair of settings.pairs) {

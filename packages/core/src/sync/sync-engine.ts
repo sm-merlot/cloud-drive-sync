@@ -36,6 +36,8 @@ export interface SyncResult {
 	// Encrypted folders this device could not read this pass (no password,
 	// wrong password, ...). Nothing inside them was touched.
 	lockedFolders: LockedFolder[];
+	// Encrypted-at-rest folders seen this pass (their key files are present)
+	atRestFolders: string[];
 }
 
 export interface SyncEngineSettings {
@@ -82,7 +84,7 @@ export class SyncEngine {
 	}
 
 	private emptyResult(): SyncResult {
-		return { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [], lockedFolders: [] };
+		return { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [], lockedFolders: [], atRestFolders: [] };
 	}
 
 	// Remote listing with encrypted folders resolved: locked folders removed,
@@ -90,6 +92,7 @@ export class SyncEngine {
 	private async listRemote(result: SyncResult): Promise<RemoteFileInfo[]> {
 		const raw = await this.provider.listAllFiles();
 		const listing = await this.encryption.prepare(raw);
+		result.atRestFolders = this.encryption.atRestFolders;
 		for (const locked of this.encryption.lockedFolders) {
 			result.lockedFolders.push(locked);
 			if (this.onLocked) this.onLocked(locked);
@@ -412,6 +415,23 @@ export class SyncEngine {
 			keyFile = await admin.createAtRest(folder, password);
 		}, opts);
 		return keyFile!;
+	}
+
+	// Write (create or replace) a folder's key file on the server. Used by
+	// at-rest conversions and password changes, which re-encrypt locally and
+	// let the normal sync carry the files.
+	writeKeyFileToServer(folder: string, keyFile: FolderKeyFile): Promise<void> {
+		return this.exclusive((admin) => admin.putKeyFile(folder, keyFile), {});
+	}
+
+	deleteKeyFileFromServer(folder: string): Promise<void> {
+		return this.exclusive((admin) => admin.deleteKeyFile(folder), {});
+	}
+
+	// Converting a transit folder to at rest: its transit-format objects on the
+	// server are replaced by the at-rest files the next sync uploads.
+	deleteServerObjectsUnder(folder: string): Promise<void> {
+		return this.exclusive((admin) => admin.deleteObjectsUnder(folder), {});
 	}
 
 	// Encrypt an existing folder in place. Calling it again with the same

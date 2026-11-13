@@ -164,12 +164,82 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 		containerEl.createEl("p", { cls: "setting-item-description mod-warning", text: KEEP_PASSWORD_WARNING });
 		const plugin = this.plugin;
 
+		const report = (e: unknown) => new Notice(e instanceof Error ? e.message : String(e), 10_000);
+		const pending = plugin.settings.pendingEncryptionOp;
+
 		for (const session of plugin.atRest.sessions.values()) {
-			new Setting(containerEl)
-				.setName(session.folder)
-				.setDesc(session.unlocked ? "Unlocked" : "Locked")
-				.addButton((b) => b.setButtonText("Open").onClick(() => void plugin.openPrivateNotes()));
+			const folder = session.folder;
+			const row = new Setting(containerEl).setName(folder).setDesc(session.unlocked ? "Unlocked" : "Locked");
+			if (pending?.folder === folder && pending.kind.startsWith("at-rest")) {
+				row.setDesc("A change to this folder didn't finish. Resume it with the same password(s).");
+				row.addButton((b) => b.setButtonText("Resume").setCta().onClick(() => void this.resumeAtRest(pending.kind, folder)));
+				continue;
+			}
+			row.addButton((b) => b.setButtonText("Open").onClick(() => void plugin.openPrivateNotes()));
+			row.addButton((b) => b.setButtonText("Change password").onClick(() => void this.changeAtRestPassword(folder)));
+			row.addButton((b) =>
+				b.setButtonText("Decrypt").setWarning().setTooltip("Turn back into a plain folder").onClick(async () => {
+					const r = await new PasswordFormModal(this.app, {
+						title: `Turn ${folder} back into a plain folder?`,
+						intro: ["Every note is decrypted and stored as plaintext again, on this device and on the server. Other devices follow at their next sync."],
+						fields: [{ key: "password", label: "Password" }],
+						submitText: "Decrypt",
+						danger: true,
+					}).openAndWait();
+					if (!r) return;
+					try {
+						await plugin.convertAtRestToPlaintext(folder, r.values.password!);
+					} catch (e) {
+						report(e);
+					}
+					this.display();
+				}),
+			);
 		}
+		if (pending?.kind === "at-rest-convert" && !plugin.atRest.sessions.has(pending.folder)) {
+			new Setting(containerEl)
+				.setName(pending.folder)
+				.setDesc("Encrypting this folder at rest didn't finish. Resume it with the same password.")
+				.addButton((b) => b.setButtonText("Resume").setCta().onClick(() => void this.resumeAtRest(pending.kind, pending.folder)));
+		} else if (pending?.kind === "at-rest-plain" && !plugin.atRest.sessions.has(pending.folder)) {
+			// Decrypted locally and unregistered; only the final sync was missed
+			new Setting(containerEl)
+				.setName(pending.folder)
+				.setDesc("Decrypting this folder almost finished; one sync is left.")
+				.addButton((b) => b.setButtonText("Finish").setCta().onClick(async () => {
+					delete plugin.settings.pendingEncryptionOp;
+					await plugin.saveSettings();
+					await plugin.runSync(true);
+					this.display();
+				}));
+		}
+		new Setting(containerEl)
+			.setName("Encrypt an existing folder at rest")
+			.setDesc("Converts a plain folder you already have. For a folder that's already in Encrypted folders above, use its Make at-rest button.")
+			.addButton((b) =>
+				b.setButtonText("Choose folder").onClick(async () => {
+					const r = await new PasswordFormModal(this.app, {
+						title: "Encrypt an existing folder at rest",
+						intro: [
+							"Every note in the folder is encrypted on this device and on the server, names included, and from then on opens only in Private notes.",
+							"Update the plugin on every device first. Afterwards, on every device: empty the system trash, and clear Settings → File recovery history. Older plaintext copies can linger there.",
+							"Server snapshots and backups taken before now still contain the plaintext.",
+						],
+						warning: KEEP_PASSWORD_WARNING,
+						folderPicker: true,
+						fields: [{ key: "password", label: "Password", confirm: true }],
+						submitText: "Encrypt at rest",
+						danger: true,
+					}).openAndWait();
+					if (!r?.folder) return;
+					try {
+						await plugin.convertToAtRest(r.folder, r.values.password!);
+					} catch (e) {
+						report(e);
+					}
+					this.display();
+				}),
+			);
 		new Setting(containerEl)
 			.setName("Create encrypted-at-rest folder")
 			.setDesc("A new, empty folder. Other devices pick it up at their next sync; unlock it there with the same password.")
@@ -206,6 +276,46 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 						}
 					}),
 			);
+	}
+
+	private async changeAtRestPassword(folder: string): Promise<void> {
+		const r = await new PasswordFormModal(this.app, {
+			title: `Change the password for ${folder}`,
+			intro: ["Every note is re-encrypted. Other devices lock the folder until you unlock it there with the new password."],
+			warning: KEEP_PASSWORD_WARNING,
+			fields: [
+				{ key: "old", label: "Current password" },
+				{ key: "new", label: "New password", confirm: true },
+			],
+			submitText: "Change password",
+		}).openAndWait();
+		if (!r) return;
+		try {
+			await this.plugin.changeAtRestPassword(folder, r.values.old!, r.values.new!);
+		} catch (e) {
+			new Notice(e instanceof Error ? e.message : String(e), 10_000);
+		}
+		this.display();
+	}
+
+	private async resumeAtRest(kind: string, folder: string): Promise<void> {
+		try {
+			if (kind === "at-rest-change") {
+				await this.changeAtRestPassword(folder);
+				return;
+			}
+			const r = await new PasswordFormModal(this.app, {
+				title: `Resume: ${folder}`,
+				fields: [{ key: "password", label: "Password" }],
+				submitText: "Resume",
+			}).openAndWait();
+			if (!r) return;
+			if (kind === "at-rest-convert") await this.plugin.convertToAtRest(folder, r.values.password!);
+			else await this.plugin.convertAtRestToPlaintext(folder, r.values.password!);
+		} catch (e) {
+			new Notice(e instanceof Error ? e.message : String(e), 10_000);
+		}
+		this.display();
 	}
 
 	private displayEncryptionSettings(containerEl: HTMLElement): void {
@@ -269,6 +379,29 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 					if (!r) return;
 					try {
 						await plugin.changeFolderPassword(folder, r.values.old!, r.values.new!);
+					} catch (e) {
+						report(e);
+					}
+					this.display();
+				}),
+			);
+			row.addButton((b) =>
+				b.setButtonText("Make at-rest").setTooltip("Encrypt on this device too (Private notes)").onClick(async () => {
+					const r = await new PasswordFormModal(this.app, {
+						title: `Encrypt ${folder} at rest?`,
+						intro: [
+							"Every note in the folder is encrypted on this device and on the server, names included, and from then on opens only in Private notes.",
+							"Update the plugin on every device first. Afterwards, on every device: empty the system trash, and clear Settings → File recovery history. Older plaintext copies can linger there.",
+							"Server snapshots and backups taken before now still contain the plaintext.",
+						],
+						warning: KEEP_PASSWORD_WARNING,
+						fields: [{ key: "password", label: "Password for Private notes", confirm: true }],
+						submitText: "Encrypt at rest",
+						danger: true,
+					}).openAndWait();
+					if (!r) return;
+					try {
+						await plugin.convertToAtRest(folder, r.values.password!);
 					} catch (e) {
 						report(e);
 					}

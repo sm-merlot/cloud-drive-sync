@@ -55,7 +55,10 @@ export interface PluginSettings {
 	encryptedFolders?: string[];
 	// An enable / password change / removal that hasn't finished; resumed on
 	// the next launch
-	pendingEncryptionOp?: { kind: "enable" | "change" | "remove"; folder: string };
+	pendingEncryptionOp?: {
+		kind: "enable" | "change" | "remove" | "at-rest-convert" | "at-rest-plain" | "at-rest-change";
+		folder: string;
+	};
 	// Encrypted-at-rest folders (DEV-390): folder → its key file JSON, cached
 	// so a folder can be unlocked offline. Key files hold nothing secret, and
 	// the password is never stored.

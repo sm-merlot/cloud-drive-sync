@@ -5,7 +5,13 @@ import {
 	S3Provider,
 	SyncStateStore,
 	UnlockCache,
+	convertFolderToAtRest,
+	convertFolderToPlaintext,
+	createKeyFile,
 	isDotPath,
+	reencryptAtRestFolder,
+	unlockKeyFile,
+	type FolderKeyFile,
 	shouldExclude,
 	type CloudProvider,
 	type LockedFolder,
@@ -226,7 +232,7 @@ export default class CloudSyncPlugin extends Plugin {
 		try {
 			const result = await engine.syncPaths(paths);
 			this.noteLockedFolders(result.lockedFolders);
-			await this.atRest.onSynced(this.unlockCache);
+			await this.atRest.onSynced(this.unlockCache, result.atRestFolders);
 			this.updateStatusBar("idle");
 			this.updateRibbon("idle");
 		} catch (e) {
@@ -408,7 +414,7 @@ export default class CloudSyncPlugin extends Plugin {
 		try {
 			const result = await engine.sync();
 			this.noteLockedFolders(result.lockedFolders);
-			await this.atRest.onSynced(this.unlockCache);
+			await this.atRest.onSynced(this.unlockCache, result.atRestFolders);
 			this.currentStage = "idle";
 			this.updateStatusBar("idle");
 			this.updateRibbon("idle");
@@ -569,6 +575,141 @@ export default class CloudSyncPlugin extends Plugin {
 		new Notice(`${folder} created. Keep its password in 1Password; it's never stored on this device.`, 10_000);
 	}
 
+	// Runs an at-rest folder operation with syncs before and after, holding the
+	// sync lock and recording it as pending so it can be resumed. Resuming
+	// needs the passwords again (they're never stored), so it's a button in
+	// settings rather than automatic.
+	private async runAtRestOp(
+		op: { kind: "at-rest-convert" | "at-rest-plain" | "at-rest-change"; folder: string },
+		label: string,
+		run: (engine: SyncEngine) => Promise<void>,
+	): Promise<boolean> {
+		if (this.syncInFlight) throw new Error("A sync is running. Try again when it finishes.");
+		const engine = this.requireEngine();
+		this.syncInFlight = true;
+		this.updateStatusBar("syncing", `${label} ${op.folder}…`);
+		this.updateRibbon("syncing");
+		try {
+			// Pick up other devices' latest edits first, so nothing is lost
+			await engine.sync();
+			this.settings.pendingEncryptionOp = op;
+			await this.saveSettings();
+			await run(engine);
+			// Carry the result to the server
+			const result = await engine.sync();
+			await this.atRest.onSynced(this.unlockCache, result.atRestFolders);
+			delete this.settings.pendingEncryptionOp;
+			await this.saveSettings();
+			new Notice(`${label} ${op.folder}: done`);
+			return true;
+		} catch (e) {
+			new Notice(`${label} ${op.folder} stopped: ${e instanceof Error ? e.message : String(e)}. Use Resume in Cloud Drive Sync settings.`, 15_000);
+			return false;
+		} finally {
+			this.updateStatusBar("idle");
+			this.updateRibbon("idle");
+			this.syncFinished();
+		}
+	}
+
+	private plaintextRemover(): (path: string) => Promise<void> {
+		// Delete outright: Obsidian's trash would keep the plaintext around
+		return async (path) => {
+			const f = this.app.vault.getAbstractFileByPath(path);
+			if (f instanceof TFile) await this.app.vault.delete(f);
+		};
+	}
+
+	// Plaintext or transit-encrypted folder → encrypted at rest
+	async convertToAtRest(folder: string, password: string): Promise<boolean> {
+		const wasTransit = this.isEncryptedFolder(folder);
+		if (wasTransit && this.lockedFolders.some((l) => l.path === folder)) {
+			throw new Error(`Unlock the encrypted folder ${folder} on this device first, so its files are here to convert`);
+		}
+		if (this.atRest.sessions.has(folder) && this.settings.pendingEncryptionOp?.folder !== folder) {
+			throw new Error(`${folder} is already encrypted at rest`);
+		}
+		return this.runAtRestOp({ kind: "at-rest-convert", folder }, "Encrypting at rest", async (engine) => {
+			const probe = await engine.probeEncryption(folder, password);
+			let keyFile: FolderKeyFile;
+			if (probe.state === "encrypted" && probe.mode === "at-rest") {
+				// Resuming: the key file is already there
+				if (!probe.passwordOk) throw new Error(`Wrong password for ${folder}`);
+				keyFile = probe.keyFile;
+			} else {
+				keyFile = (await createKeyFile(password, { mode: "at-rest" })).keyFile;
+				await engine.writeKeyFileToServer(folder, keyFile);
+				// The transit objects on the server are replaced by the at-rest
+				// files this device uploads next
+				if (wasTransit || probe.state === "encrypted") await engine.deleteServerObjectsUnder(folder);
+			}
+			const keys = await unlockKeyFile(keyFile, password);
+			const fs = new ObsidianLocalFileSystem(this.app);
+			await convertFolderToAtRest(fs, "", folder, keys, {
+				removePlaintext: this.plaintextRemover(),
+				onProgress: (n, total) => this.updateStatusBar("syncing", `Encrypting ${folder}: ${n}/${total}`),
+			});
+			if (wasTransit) await this.forgetEncryptedFolder(folder, false);
+			const session = await this.atRest.register(folder, keyFile);
+			await session.unlock(password);
+		});
+	}
+
+	// Encrypted at rest → plaintext again
+	async convertAtRestToPlaintext(folder: string, password: string): Promise<boolean> {
+		const session = this.atRest.sessions.get(folder);
+		if (!session) throw new Error(`${folder} is not an encrypted-at-rest folder on this device`);
+		const keys = await unlockKeyFile(session.currentKeyFile, password).catch(() => {
+			throw new Error(`Wrong password for ${folder}`);
+		});
+		await session.lock("manual");
+		return this.runAtRestOp({ kind: "at-rest-plain", folder }, "Decrypting", async (engine) => {
+			await convertFolderToPlaintext(new ObsidianLocalFileSystem(this.app), "", folder, keys);
+			await engine.deleteKeyFileFromServer(folder);
+			await this.atRest.unregister(folder);
+		});
+	}
+
+	async changeAtRestPassword(folder: string, oldPassword: string, newPassword: string): Promise<boolean> {
+		const session = this.atRest.sessions.get(folder);
+		if (!session) throw new Error(`${folder} is not an encrypted-at-rest folder on this device`);
+		await session.lock("manual");
+		return this.runAtRestOp({ kind: "at-rest-change", folder }, "Re-encrypting", async (engine) => {
+			const current = session.currentKeyFile;
+			let oldKeys;
+			let newKeyFile: FolderKeyFile;
+			if (current.rotation?.previous) {
+				// Resuming: current is the new generation, previous the old one
+				oldKeys = await unlockKeyFile(current.rotation.previous, oldPassword);
+				newKeyFile = current;
+			} else {
+				oldKeys = await unlockKeyFile(current, oldPassword).catch(() => {
+					throw new Error(`Wrong current password for ${folder}`);
+				});
+				const { format, version, keyId, kdf, check, mode } = current;
+				newKeyFile = (await createKeyFile(newPassword, {
+					mode: "at-rest",
+					rotation: { fromKeyId: keyId, previous: { format, version, keyId, kdf, check, ...(mode ? { mode } : {}) } },
+				})).keyFile;
+				// Other devices lock as soon as they see this
+				await engine.writeKeyFileToServer(folder, newKeyFile);
+				await this.atRest.register(folder, newKeyFile);
+			}
+			const newKeys = await unlockKeyFile(newKeyFile, newPassword).catch(() => {
+				throw new Error(`Wrong new password for ${folder}`);
+			});
+			const r = await reencryptAtRestFolder(new ObsidianLocalFileSystem(this.app), "", folder, oldKeys, newKeys, {
+				onProgress: (n, total) => this.updateStatusBar("syncing", `Re-encrypting ${folder}: ${n}/${total}`),
+			});
+			if (r.skipped.length) console.warn(`Unreadable files left in ${folder}:`, r.skipped);
+			// Upload the new generation before telling other devices it's done
+			await engine.sync();
+			const finished: FolderKeyFile = { ...newKeyFile, rotation: null };
+			await engine.writeKeyFileToServer(folder, finished);
+			await this.atRest.register(folder, finished);
+		});
+	}
+
 	// ---------- encrypted folders ----------
 
 	isEncryptedFolder(folder: string): boolean {
@@ -639,11 +780,11 @@ export default class CloudSyncPlugin extends Plugin {
 	// Drop the folder from this device's settings and forget its password,
 	// without touching the server. Safe: if the folder still has a key file,
 	// the engine keeps it locked anyway ("No password for ...").
-	async forgetEncryptedFolder(folder: string): Promise<void> {
+	async forgetEncryptedFolder(folder: string, sync = true): Promise<void> {
 		this.settings.encryptedFolders = (this.settings.encryptedFolders ?? []).filter((f) => f !== folder);
 		this.secrets.clear(folder);
 		await this.saveSettings();
-		this.runSync();
+		if (sync) this.runSync();
 	}
 
 	private requireEngine(): SyncEngine {
@@ -689,6 +830,11 @@ export default class CloudSyncPlugin extends Plugin {
 	async resumeEncryptionOp(): Promise<void> {
 		const op = this.settings.pendingEncryptionOp;
 		if (!op) return;
+		if (op.kind === "at-rest-convert" || op.kind === "at-rest-plain" || op.kind === "at-rest-change") {
+			new Notice(`An encrypted-at-rest change for ${op.folder} didn't finish. Open Cloud Drive Sync settings and press Resume.`, 15_000);
+			return;
+		}
+		const transitOp = { kind: op.kind, folder: op.folder };
 		const pw = this.secrets.get(op.folder);
 		if (!pw) {
 			new Notice(`Can't resume the encryption change for ${op.folder}: no password stored on this device`, 15_000);
@@ -697,17 +843,17 @@ export default class CloudSyncPlugin extends Plugin {
 		new Notice(`Resuming the encryption change for ${op.folder}…`);
 		try {
 			if (op.kind === "enable") {
-				await this.runEncryptionOp(op, (e) => e.enableEncryption(op.folder, pw));
+				await this.runEncryptionOp(transitOp, (e) => e.enableEncryption(op.folder, pw));
 			} else if (op.kind === "change") {
 				const old = this.secrets.getOld(op.folder);
 				if (!old) {
 					new Notice(`Can't resume the password change for ${op.folder}: the old password is missing`, 15_000);
 					return;
 				}
-				if (await this.runEncryptionOp(op, (e) => e.changeEncryptionPassword(op.folder, old, pw))) {
+				if (await this.runEncryptionOp(transitOp, (e) => e.changeEncryptionPassword(op.folder, old, pw))) {
 					this.secrets.clearOld(op.folder);
 				}
-			} else if (await this.runEncryptionOp(op, (e) => e.removeEncryption(op.folder, pw))) {
+			} else if (await this.runEncryptionOp(transitOp, (e) => e.removeEncryption(op.folder, pw))) {
 				this.settings.encryptedFolders = (this.settings.encryptedFolders ?? []).filter((f) => f !== op.folder);
 				this.secrets.clear(op.folder);
 				await this.saveSettings();
