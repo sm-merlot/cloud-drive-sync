@@ -50,6 +50,12 @@ export interface PluginSettings {
 	conflictStrategy: ConflictStrategy;
 	debugMode: boolean;
 	syncState: SyncState;
+	// Per-folder encryption (Obsidian plugin). Passwords are never stored
+	// here; they live in the OS keychain via Obsidian's secretStorage.
+	encryptedFolders?: string[];
+	// An enable / password change / removal that hasn't finished; resumed on
+	// the next launch
+	pendingEncryptionOp?: { kind: "enable" | "change" | "remove"; folder: string };
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {

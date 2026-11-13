@@ -300,6 +300,21 @@ chunked format (v2 header) can lift the cap later.
   first used the previous pass's state and made a just-unlocked folder look
   locally deleted (a bug in #13, fixed here).
 
+### 9. Implementation notes (DEV-383, Obsidian plugin)
+
+- Settings → **Encrypted folders** offers Add (encrypt, or join a folder another
+  device already encrypted, chosen by probing the remote key file), Enter
+  password, Change password and Remove encryption. A folder with an
+  unfinished operation shows Resume.
+- Passwords live in `app.secretStorage` under `cds-folder-<md5(path)>`, with
+  `-old` holding the previous password only while a change runs. `data.json`
+  holds just the folder list and any pending operation.
+- The plugin builds a new engine per sync, so it shares one `UnlockCache`
+  across engines; otherwise PBKDF2 would run on every sync and every edit.
+- Lock reasons go through `engine.onLocked`, and each one is shown once per
+  session. The status bar shows "· N locked", with the reasons in its tooltip.
+- `minAppVersion` is now 1.11.4.
+
 ## Password change (key rotation)
 
 Done on one device, resumable, atomic per file:

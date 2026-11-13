@@ -4,6 +4,7 @@ import type { SyncStateStore } from "../../src/sync/sync-state";
 import { computeMD5 } from "../../src/util/hash";
 import { KEY_FILE_NAME, createKeyFile, serializeKeyFile } from "../../src/crypto/folder-crypto";
 import type { ConflictStrategy } from "../../src/types";
+import type { UnlockCache } from "../../src/sync/folder-encryption";
 import { FakeLocalFs, FakeProvider, FakeUI, makeState } from "./fakes";
 
 // Shared setup for encrypted-folder engine tests: a fake clock, a provider
@@ -56,7 +57,7 @@ export function makeProvider(): FakeProvider {
 export function device(
 	provider: FakeProvider,
 	password: string | null,
-	opts: { configured?: boolean; strategy?: ConflictStrategy; lastSyncTime?: number; encryption?: boolean } = {},
+	opts: { configured?: boolean; strategy?: ConflictStrategy; lastSyncTime?: number; encryption?: boolean; unlockCache?: UnlockCache } = {},
 ): Device {
 	const fs = new FakeLocalFs();
 	const { store } = makeState([], opts.lastSyncTime ?? 1000);
@@ -69,6 +70,7 @@ export function device(
 		encryption: opts.encryption === false ? undefined : {
 			folders: opts.configured === false ? [] : [FOLDER],
 			passwordFor: (f) => (f === FOLDER ? dev.password : null),
+			unlockCache: opts.unlockCache,
 		},
 	});
 	dev.engine.onNotice = (m) => notices.push(m);

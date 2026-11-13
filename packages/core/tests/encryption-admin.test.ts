@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { isEncryptedContent, parseKeyFile } from "../src/crypto/folder-crypto";
+import { UnlockCache } from "../src/sync/folder-encryption";
 import type { FakeProvider } from "./helpers/fakes";
 import {
 	FOLDER, KEY_PATH, device, makeProvider, remoteKeysUnder, text, tick, useFakeClock,
@@ -316,5 +317,36 @@ describe("remove encryption", () => {
 		const before = new Map(provider.objects);
 		await expect(a.engine.removeEncryption(FOLDER, "nope")).rejects.toThrow("Wrong password");
 		expect(provider.objects).toEqual(before);
+	});
+});
+
+describe("probe and unlock cache", () => {
+	it("reports not-encrypted, right and wrong passwords", async () => {
+		const provider = makeProvider();
+		const a = device(provider, null, { configured: false });
+		a.fs.setFile("Journal/one.md", "one", tick());
+		await a.engine.sync();
+		expect(await a.engine.probeEncryption(FOLDER, "pw1")).toEqual({ state: "not-encrypted" });
+		await a.engine.enableEncryption(FOLDER, "pw1", FAST);
+		expect(await a.engine.probeEncryption(FOLDER, "pw1")).toEqual({ state: "encrypted", passwordOk: true, changeInProgress: false });
+		expect(await a.engine.probeEncryption(FOLDER, "nope")).toEqual({ state: "encrypted", passwordOk: false, changeInProgress: false });
+	});
+
+	it("a shared UnlockCache skips the key file download on a new engine", async () => {
+		const provider = makeProvider();
+		const a = device(provider, null, { configured: false });
+		a.fs.setFile("Journal/one.md", "one", tick());
+		await a.engine.sync();
+		await a.engine.enableEncryption(FOLDER, "pw1", FAST);
+
+		const cache = new UnlockCache();
+		const first = device(provider, "pw1", { lastSyncTime: 0, unlockCache: cache });
+		await first.engine.sync();
+		const second = device(provider, "pw1", { unlockCache: cache });
+		second.fs.files = first.fs.files;
+		for (const [p, r] of Object.entries(first.store.getAllRecords())) second.store.setRecord(p, r);
+		const downloads = provider.downloadCalls;
+		await second.engine.sync();
+		expect(provider.downloadCalls).toBe(downloads);
 	});
 });

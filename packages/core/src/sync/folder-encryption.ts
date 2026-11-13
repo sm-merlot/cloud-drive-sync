@@ -29,6 +29,17 @@ export interface EncryptionSettings {
 	folders: string[];
 	// Password for a folder, or null when this device has none for it
 	passwordFor(folder: string): string | null;
+	// Keep one per app session and pass it to every engine: hosts that build
+	// a new SyncEngine per sync would otherwise run PBKDF2 (600k
+	// iterations) on every pass.
+	unlockCache?: UnlockCache;
+}
+
+export class UnlockCache {
+	readonly entries = new Map<string, CachedUnlock>();
+	clear(): void {
+		this.entries.clear();
+	}
 }
 
 export interface LockedFolder {
@@ -36,12 +47,12 @@ export interface LockedFolder {
 	reason: string;
 }
 
-interface UnlockedFolder {
+export interface UnlockedFolder {
 	keyFile: FolderKeyFile;
 	keys: FolderKeys;
 }
 
-interface CachedUnlock extends UnlockedFolder {
+export interface CachedUnlock extends UnlockedFolder {
 	etag: string;
 	password: string;
 }
@@ -53,7 +64,7 @@ function isUnder(path: string, folder: string): boolean {
 export class FolderEncryption {
 	// Survives across passes: PBKDF2 at 600k iterations runs once per
 	// (folder, key file version, password), not once per sync.
-	private unlockCache = new Map<string, CachedUnlock>();
+	private unlockCache: Map<string, CachedUnlock>;
 
 	private locked = new Map<string, string>();
 	private unlocked = new Map<string, UnlockedFolder>();
@@ -62,7 +73,9 @@ export class FolderEncryption {
 	constructor(
 		private provider: CloudProvider,
 		private settings: EncryptionSettings,
-	) {}
+	) {
+		this.unlockCache = settings.unlockCache?.entries ?? new Map();
+	}
 
 	get lockedFolders(): LockedFolder[] {
 		return Array.from(this.locked, ([path, reason]) => ({ path, reason }));
