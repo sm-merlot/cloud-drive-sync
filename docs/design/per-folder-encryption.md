@@ -263,6 +263,22 @@ chunked format (v2 header) can lift the cap later.
 - GCM tag failure with a matching keyId: tampered or corrupt. Surface it as an
   error issue and never write it locally.
 
+### 7. Implementation notes (DEV-380/381)
+
+- Key-file detection is **always on**, even when the host passes no
+  encryption settings (the Tauri app today). A folder with a key file and no
+  password is locked, so ciphertext is never synced as ordinary files.
+- External merge tools read and upload raw remote bytes, so they are refused
+  in encrypted folders. The "external" resolution falls back to the built-in
+  merge (conflict markers) with a notice.
+- `remoteHash` matters most when the server clock runs ahead of the device
+  clock. Then `remote.modifiedTime > record.remoteModTime` is always true and
+  only the ciphertext-hash comparison prevents a download on every pass.
+- `syncPaths()` now runs the stale-mtime heal as well (it was `sync()`-only),
+  because the file-watcher path also hits the mobile stat race.
+- Key-file unlocks are cached by (folder, key-file ETag, password), so
+  PBKDF2 runs once per launch, not once per sync.
+
 ## Password change (key rotation)
 
 Done on one device, resumable, atomic per file:
