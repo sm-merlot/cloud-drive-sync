@@ -14,10 +14,11 @@ concurrency:
 
 jobs:
   test:
-    # The repo is public: a pull request from a fork runs on GitHub-hosted
-    # runners, never on the self-hosted homelab runner. Same-repo branches and
-    # pushes to main use homelab-2gb, matching the release workflow.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'homelab-2gb' }}
+    # The repo is public. Only pull requests from branches in this repo run;
+    # a PR from a fork is skipped, so outside code never reaches the
+    # self-hosted homelab runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: homelab-2gb
     container: node:22
     timeout-minutes: 15
     steps:
