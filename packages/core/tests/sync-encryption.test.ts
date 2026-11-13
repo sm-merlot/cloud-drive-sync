@@ -4,6 +4,8 @@ import { MULTIPART_THRESHOLD_BYTES } from "../src/util/constants";
 import { createKeyFile, isEncryptedContent, serializeKeyFile, type FolderKeys } from "../src/crypto/folder-crypto";
 import { encryptAtRest, toAtRestPath } from "../src/crypto/at-rest";
 import { UnlockCache } from "../src/sync/folder-encryption";
+import { AtRestSession } from "../src/sync/at-rest-session";
+import { convertFolderToAtRest, convertFolderToPlaintext, reencryptAtRestFolder } from "../src/sync/at-rest-ops";
 import type { ConflictStrategy } from "../src/types";
 import type { FakeProvider } from "./helpers/fakes";
 import {
@@ -555,5 +557,103 @@ describe("at-rest folders: plaintext inside is never uploaded", () => {
 		a.fs.setFile("Journal/Leaked.md", "PLAINTEXT LEAK 2", tick());
 		await a.engine.syncPaths(new Set(["Journal/Leaked.md"]));
 		expect(provider.objects.has("Journal/Leaked.md")).toBe(false);
+	});
+});
+
+describe("at-rest conversion across two devices (what the plugin orchestrates)", () => {
+	const removeNow = (d: Device) => async (p: string) => { d.fs.files.delete(p); };
+
+	async function setup(transit: boolean) {
+		const provider = makeProvider();
+		const a = device(provider, transit ? "tpw" : null, { configured: transit });
+		a.fs.setFile("Journal/a.md", "SECRET a", tick());
+		a.fs.setFile("Journal/Sub/b.md", "SECRET b", tick());
+		a.fs.setFile("public.md", "public", tick());
+		if (transit) await a.engine.enableEncryption(FOLDER, "tpw", { iterations: 1000 });
+		await a.engine.sync();
+		const b = device(provider, transit ? "tpw" : null, { configured: transit, lastSyncTime: 0 });
+		await b.engine.sync();
+		expect(text(b.fs.files.get("Journal/a.md")?.bytes)).toBe("SECRET a");
+		return { provider, a, b };
+	}
+
+	async function convert(a: Device, transit: boolean) {
+		const { keyFile, keys } = await createKeyFile("rest", { iterations: 1000, mode: "at-rest" });
+		await a.engine.sync();
+		await a.engine.writeKeyFileToServer(FOLDER, keyFile);
+		if (transit) await a.engine.deleteServerObjectsUnder(FOLDER);
+		await convertFolderToAtRest(a.fs, "", FOLDER, keys, { removePlaintext: removeNow(a) });
+		if (transit) a.password = null; // the plugin forgets the transit config
+		const r = await a.engine.sync();
+		expect(r.errors).toBe(0);
+		return { keyFile, keys };
+	}
+
+	for (const transit of [false, true]) {
+		it(`${transit ? "transit" : "plaintext"} → at rest: the server and both devices end with ciphertext only, nothing lost`, async () => {
+			const { provider, a, b } = await setup(transit);
+			const { keyFile } = await convert(a, transit);
+
+			const serverText = [...provider.objects].map(([k, o]) => `${k} ${text(o.bytes)}`).join("\n");
+			expect(serverText).not.toContain("SECRET");
+			expect(serverText).not.toMatch(/a\.md|b\.md|Sub/);
+			expect(text(provider.objects.get("public.md")?.bytes)).toBe("public");
+
+			b.password = null;
+			const rb = await b.engine.sync();
+			expect(rb.errors).toBe(0);
+			expect(rb.atRestFolders).toEqual([FOLDER]);
+			const bText = [...b.fs.files].map(([k, f]) => `${k} ${text(f.bytes)}`).join("\n");
+			expect(bText).not.toContain("SECRET");
+			expect([...b.fs.files.keys()].filter((p) => p.startsWith("Journal/") && !p.endsWith(".cdse"))).toEqual([]);
+
+			// Everything is still readable on b with the new password
+			const s = new AtRestSession(b.fs, "", FOLDER, keyFile);
+			await s.unlock("rest");
+			expect(text(await s.read("Journal/a.md"))).toBe("SECRET a");
+			expect(text(await s.read("Journal/Sub/b.md"))).toBe("SECRET b");
+
+			expect([(await a.engine.sync()).uploaded, (await b.engine.sync()).downloaded]).toEqual([0, 0]);
+		});
+	}
+
+	it("at rest → plaintext: both devices end with the plain files and no key file", async () => {
+		const { provider, a, b } = await setup(false);
+		const { keys } = await convert(a, false);
+		await b.engine.sync();
+
+		await convertFolderToPlaintext(a.fs, "", FOLDER, keys);
+		await a.engine.deleteKeyFileFromServer(FOLDER);
+		await a.engine.sync();
+		expect(provider.objects.has(KEY_PATH)).toBe(false);
+		expect(text(provider.objects.get("Journal/a.md")?.bytes)).toBe("SECRET a");
+
+		const rb = await b.engine.sync();
+		expect(rb.errors).toBe(0);
+		expect(rb.atRestFolders).toEqual([]);
+		expect(text(b.fs.files.get("Journal/Sub/b.md")?.bytes)).toBe("SECRET b");
+		expect([...b.fs.files.keys()].some((p) => p.endsWith(".cdse"))).toBe(false);
+	});
+
+	it("password change: re-encrypted on one device, the other converges with nothing lost", async () => {
+		const { a, b } = await setup(false);
+		const { keyFile: oldKf, keys: oldKeys } = await convert(a, false);
+		await b.engine.sync();
+
+		const { keyFile: newKf, keys: newKeys } = await createKeyFile("rest2", {
+			iterations: 1000, mode: "at-rest", rotation: { fromKeyId: oldKf.keyId },
+		});
+		await a.engine.writeKeyFileToServer(FOLDER, newKf);
+		await reencryptAtRestFolder(a.fs, "", FOLDER, oldKeys, newKeys);
+		await a.engine.sync();
+		await a.engine.writeKeyFileToServer(FOLDER, { ...newKf, rotation: null });
+
+		const rb = await b.engine.sync();
+		expect(rb.errors).toBe(0);
+		const s = new AtRestSession(b.fs, "", FOLDER, { ...newKf, rotation: null });
+		await s.unlock("rest2");
+		const listing = await s.list();
+		expect(listing.unreadable).toEqual([]);
+		expect(listing.nodes.filter((n) => n.isFile).map((n) => n.plainPath).sort()).toEqual(["Journal/Sub/b.md", "Journal/a.md"]);
 	});
 });

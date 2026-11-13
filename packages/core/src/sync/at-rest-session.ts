@@ -51,6 +51,13 @@ export class AtRestLockedError extends Error {
 	}
 }
 
+export class AtRestBusyError extends Error {
+	constructor(folder: string) {
+		super(`A password change for ${folder} is in progress; try again once it finishes`);
+		this.name = "AtRestBusyError";
+	}
+}
+
 export interface AtRestSessionOptions {
 	idleMs?: number;
 	onLock?: (reason: LockReason) => void;
@@ -81,10 +88,17 @@ export class AtRestSession {
 		return this.keyFile.keyId;
 	}
 
+	get currentKeyFile(): FolderKeyFile {
+		return this.keyFile;
+	}
+
 	// ---------- lock / unlock ----------
 
 	// Throws WrongPasswordError on a wrong password
 	async unlock(password: string): Promise<void> {
+		// Mid password change on some device: files are a mix of generations
+		// until it finishes, so editing now could write into the old one.
+		if (this.keyFile.rotation) throw new AtRestBusyError(this.folder);
 		this.keys = await unlockKeyFile(this.keyFile, password);
 		this.touch();
 	}

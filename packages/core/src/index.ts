@@ -17,3 +17,4 @@ export * from "./crypto/at-rest";
 export * from "./sync/folder-encryption";
 export * from "./sync/encryption-admin";
 export * from "./sync/at-rest-session";
+export * from "./sync/at-rest-ops";

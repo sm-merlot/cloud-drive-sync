@@ -64,10 +64,35 @@ export class AtRestManager {
 		return session;
 	}
 
+	async unregister(folder: string): Promise<void> {
+		await this.sessions.get(folder)?.lock("manual");
+		this.sessions.delete(folder);
+		const rest = { ...(this.plugin.settings.atRestFolders ?? {}) };
+		delete rest[folder];
+		this.plugin.settings.atRestFolders = rest;
+		await this.plugin.saveSettings();
+		this.applyHiding();
+		this.changed();
+	}
+
 	// After each sync: pick up at-rest folders created on other devices, and
-	// key file changes (a password change elsewhere locks the folder).
-	async onSynced(cache: UnlockCache): Promise<void> {
+	// key file changes (a password change elsewhere locks the folder). A
+	// folder whose key file is gone (converted back to plaintext elsewhere) is
+	// dropped once none of its encrypted files are left here.
+	async onSynced(cache: UnlockCache, seenAtRest?: string[]): Promise<void> {
 		let dirty = false;
+		if (seenAtRest) {
+			const local = this.plugin.app.vault.getFiles().map((f) => f.path);
+			for (const folder of [...this.sessions.keys()]) {
+				if (seenAtRest.includes(folder) || this.plugin.settings.pendingEncryptionOp?.folder === folder) continue;
+				if (local.some((p) => p.startsWith(folder + "/") && p.endsWith(".cdse"))) continue;
+				await this.unregister(folder);
+			}
+			// A folder converted from transit to at rest on another device
+			for (const folder of seenAtRest) {
+				if (this.plugin.isEncryptedFolder(folder)) await this.plugin.forgetEncryptedFolder(folder, false);
+			}
+		}
 		for (const [folder, { keyFile }] of cache.keyFiles) {
 			if (folderMode(keyFile) !== "at-rest") continue;
 			const json = serializeKeyFile(keyFile);
@@ -91,7 +116,9 @@ export class AtRestManager {
 			[folder]: serializeKeyFile(keyFile),
 		};
 		await this.plugin.saveSettings();
-		const session = this.sessions.get(folder) ?? this.addSession(folder, keyFile);
+		const existing = this.sessions.get(folder);
+		if (existing) await existing.updateKeyFile(keyFile);
+		const session = existing ?? this.addSession(folder, keyFile);
 		this.applyHiding();
 		this.changed();
 		return session;

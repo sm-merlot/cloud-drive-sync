@@ -222,6 +222,33 @@ export class EncryptionAdmin {
 		await this.stateStore.save();
 	}
 
+	// ---------- raw key file / object helpers (at-rest operations) ----------
+
+	async putKeyFile(folder: string, keyFile: FolderKeyFile): Promise<void> {
+		this.checkFolder(folder);
+		const listing = await this.provider.listAllFiles();
+		const info = listing.find((f) => !f.isFolder && f.path === `${folder}/${KEY_FILE_NAME}`) ?? null;
+		if (!info) await this.ensureRemoteFolder(folder, listing);
+		await this.writeKeyFile(folder, keyFile, info);
+	}
+
+	async deleteKeyFile(folder: string): Promise<void> {
+		this.checkFolder(folder);
+		const info = (await this.provider.listAllFiles()).find((f) => !f.isFolder && f.path === `${folder}/${KEY_FILE_NAME}`);
+		if (info) await this.provider.deleteFile(info.id);
+	}
+
+	async deleteObjectsUnder(folder: string): Promise<void> {
+		this.checkFolder(folder);
+		const listing = await this.provider.listAllFiles();
+		for (const f of this.objectsUnder(folder, listing)) {
+			if (!f.isFolder) await this.provider.deleteFile(f.id);
+		}
+		for (const f of this.objectsUnder(folder, listing).filter((x) => x.isFolder).sort((a, b) => depth(b.path) - depth(a.path))) {
+			await this.provider.deleteFile(f.id);
+		}
+	}
+
 	// ---------- checks ----------
 
 	private checkFolder(folder: string): void {
