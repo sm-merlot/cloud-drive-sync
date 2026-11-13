@@ -129,6 +129,44 @@ describe("SyncEngine classification", () => {
 	});
 });
 
+describe("SyncEngine encrypted-note files", () => {
+	// Meld Encrypt's .mdenc is JSON text around base64 ciphertext: it passes
+	// the text sniff, but line-merging two versions corrupts the note.
+	const envelope = (data: string) => JSON.stringify({ version: "2.0", hint: "", encodedData: data }, null, 2);
+
+	it.each(["note.mdenc", "Private/x.cdse", "UPPER.MDENC"])("%s is never line-merged under smart-merge", async (path) => {
+		const fs = new FakeLocalFs();
+		const provider = new FakeProvider();
+		const ui = new FakeUI();
+		const local = envelope("AAAAlocalciphertextBBBB");
+		fs.setFile(path, local, 2000);
+		provider.setObject(path, envelope("CCCCremoteciphertextDDDD"), 2000);
+		const { store } = makeState([record(path, { contentHash: "nope" })]);
+		await makeEngine(fs, provider, store, ui, "smart-merge").sync();
+		expect(ui.surfacedIssues.map((i) => i.type)).toEqual(["conflict"]);
+		expect(new TextDecoder().decode(fs.files.get(path)!.bytes)).toBe(local);
+	});
+
+	it("the Merge resolution refuses too, leaving both sides intact", async () => {
+		const fs = new FakeLocalFs();
+		const provider = new FakeProvider();
+		const ui = new FakeUI();
+		const notices: string[] = [];
+		const local = envelope("localcipher");
+		const remote = envelope("remotecipher");
+		fs.setFile("n.mdenc", local, 2000);
+		provider.setObject("n.mdenc", remote, 2000);
+		const { store } = makeState([record("n.mdenc", { contentHash: "nope" })]);
+		ui.cannedResolutions = [{ vaultPath: "n.mdenc", resolution: "merge", remoteId: "n.mdenc" }];
+		const engine = makeEngine(fs, provider, store, ui);
+		engine.onNotice = (m) => notices.push(m);
+		await engine.sync();
+		expect(notices.some((n) => n.includes("Cannot merge n.mdenc"))).toBe(true);
+		expect(new TextDecoder().decode(fs.files.get("n.mdenc")!.bytes)).toBe(local);
+		expect(new TextDecoder().decode(provider.objects.get("n.mdenc")!.bytes)).toBe(remote);
+	});
+});
+
 describe("SyncEngine delete handling", () => {
 	let fs: FakeLocalFs;
 	let provider: FakeProvider;

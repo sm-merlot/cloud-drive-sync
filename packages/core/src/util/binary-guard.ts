@@ -5,6 +5,19 @@ const TEXT_MIME_ALLOWLIST = new Set([
 	"application/typescript",
 ]);
 
+// Text files whose content is ciphertext: Meld Encrypt's whole-note .mdenc
+// (a JSON envelope around base64) and our own at-rest .cdse. They pass a text
+// sniff, but a line merge of two versions splices two ciphertexts into a note
+// neither side can decrypt.
+const NEVER_LINE_MERGE_EXTENSIONS = new Set(["mdenc", "cdse"]);
+
+// Whether merge2way may touch this file at all
+export function isLineMergeable(path: string, content: ArrayBuffer, mimeType: string): boolean {
+	const ext = path.split("/").pop()!.split(".").pop()!.toLowerCase();
+	if (NEVER_LINE_MERGE_EXTENSIONS.has(ext)) return false;
+	return isProbablyText(content, mimeType);
+}
+
 // Guards merge2way (line-based LCS text merge) from ever touching binary
 // content, which it would corrupt. NUL-byte sniff over the first 8KB is the
 // same heuristic git/grep -I use — catches binary data behind unknown or
