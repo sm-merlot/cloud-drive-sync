@@ -8,6 +8,9 @@ export interface SyncFileRecord {
 	// local file size at last sync; absent on records persisted before this
 	// field existed — comparisons must treat undefined as "unknown", not "changed"
 	size?: number;
+	// Encrypted folders only: MD5 of the ciphertext last uploaded/downloaded
+	// (= the remote ETag). contentHash stays the plaintext MD5.
+	remoteHash?: string;
 }
 
 export interface SyncState {

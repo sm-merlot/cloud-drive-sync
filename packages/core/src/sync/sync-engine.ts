@@ -8,7 +8,9 @@ import { computeMD5 } from "../util/hash";
 import { getFileName, getParentPath, guessMimeType, isDotPath, shouldExclude } from "../util/path";
 import { merge2way } from "../util/merge";
 import { isProbablyText } from "../util/binary-guard";
-import { HASH_VERIFY_THRESHOLD_BYTES } from "../util/constants";
+import { HASH_VERIFY_THRESHOLD_BYTES, MULTIPART_THRESHOLD_BYTES } from "../util/constants";
+import { CONTENT_OVERHEAD_BYTES } from "../crypto/folder-crypto";
+import { FolderEncryption, type EncryptionSettings, type LockedFolder } from "./folder-encryption";
 
 const FOLDER_SENTINEL = "__folder__";
 
@@ -29,17 +31,24 @@ export interface SyncResult {
 	conflicts: number;
 	errors: number;
 	failures: SyncIssue[];
+	// Encrypted folders this device could not read this pass (no password,
+	// wrong password, ...). Nothing inside them was touched.
+	lockedFolders: LockedFolder[];
 }
 
 export interface SyncEngineSettings {
 	conflictStrategy: ConflictStrategy;
 	excludePatterns: string[];
 	debugMode?: boolean;
+	// Per-folder encryption. Absent = no folders configured; remote key files
+	// are still detected and their folders locked.
+	encryption?: EncryptionSettings;
 }
 
 export class SyncEngine {
 	private syncing = false;
 	private firstSyncStrategy: FirstSyncStrategy | null = null;
+	private encryption: FolderEncryption;
 	onProgress?: (message: string) => void;
 	// User-visible notices (toasts in Obsidian, status line in Tauri)
 	onNotice?: (message: string) => void;
@@ -51,7 +60,15 @@ export class SyncEngine {
 		private stateStore: SyncStateStore,
 		private ui: SyncUIPort,
 		private settings: SyncEngineSettings,
-	) {}
+	) {
+		// Always on, even with no folders configured: a device that knows
+		// nothing about a folder's password must still see its key file and
+		// lock it, never sync its ciphertext as ordinary files.
+		this.encryption = new FolderEncryption(
+			provider,
+			settings.encryption ?? { folders: [], passwordFor: () => null },
+		);
+	}
 
 	getProvider(): CloudProvider { return this.provider; }
 
@@ -60,7 +77,23 @@ export class SyncEngine {
 	}
 
 	private emptyResult(): SyncResult {
-		return { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [] };
+		return { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [], lockedFolders: [] };
+	}
+
+	// Remote listing with encrypted folders resolved: locked folders removed,
+	// encrypted names translated to plaintext vault paths.
+	private async listRemote(result: SyncResult): Promise<RemoteFileInfo[]> {
+		const raw = await this.provider.listAllFiles();
+		const listing = await this.encryption.prepare(raw);
+		for (const locked of this.encryption.lockedFolders) {
+			result.lockedFolders.push(locked);
+			this.onNotice?.(locked.reason);
+		}
+		return listing;
+	}
+
+	private isEncrypted(path: string): boolean {
+		return this.encryption.isEncryptedPath(path);
 	}
 
 	async sync(): Promise<SyncResult> {
@@ -90,7 +123,7 @@ export class SyncEngine {
 
 			// 2. Gather remote state
 			this.progress("Listing remote...");
-			const allRemote = await this.provider.listAllFiles();
+			const allRemote = await this.listRemote(result);
 			const remoteMap = new Map<string, RemoteFileInfo>();
 			const remoteFolderMap = new Map<string, RemoteFileInfo>();
 			for (const f of allRemote) {
@@ -147,8 +180,7 @@ export class SyncEngine {
 			// 7. Execute file actions
 			for (const action of nonConflictActions) {
 				try {
-					await this.executeAction(action, localMap, remoteMap);
-					this.countAction(action, result);
+					if (await this.executeAction(action, localMap, remoteMap)) this.countAction(action, result);
 				} catch (e) {
 					if (e instanceof RemoteNotFoundError) {
 						// Remote file vanished between listing and fetch (deleted or
@@ -217,7 +249,7 @@ export class SyncEngine {
 		const result = this.emptyResult();
 
 		try {
-			const allRemote = await this.provider.listAllFiles();
+			const allRemote = await this.listRemote(result);
 			const remoteMap = new Map<string, RemoteFileInfo>();
 			const remoteFolderMap = new Map<string, RemoteFileInfo>();
 			for (const f of allRemote) {
@@ -273,6 +305,7 @@ export class SyncEngine {
 			}
 
 			// Phase 2: file actions
+			await this.healStaleLocalModTimes(localMap);
 			const actions: SyncAction[] = [];
 			const preIssues: SyncIssue[] = [];
 			for (const path of paths) {
@@ -293,8 +326,7 @@ export class SyncEngine {
 			for (const action of actions) {
 				if (action.type === "conflict") continue;
 				try {
-					await this.executeAction(action, localMap, remoteMap);
-					this.countAction(action, result);
+					if (await this.executeAction(action, localMap, remoteMap)) this.countAction(action, result);
 				} catch (e) {
 					const msg = e instanceof Error ? e.message : String(e);
 					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
@@ -374,7 +406,10 @@ export class SyncEngine {
 			if (!record || record.contentHash === FOLDER_SENTINEL) continue;
 			if (local.mtimeMs <= record.localModTime) continue;
 			if (record.size !== undefined && local.size !== record.size) continue;
-			if (local.size >= HASH_VERIFY_THRESHOLD_BYTES) continue;
+			// Encrypted files are always verified: a spurious re-upload of one
+			// produces new ciphertext, which every other device then downloads
+			// and rewrites, so a missed heal turns into a cross-device loop.
+			if (local.size >= HASH_VERIFY_THRESHOLD_BYTES && !this.isEncrypted(path)) continue;
 
 			const bytes = await this.fs.readFile(this.root, path);
 			if (computeMD5(toArrayBuffer(bytes)) !== record.contentHash) continue;
@@ -385,9 +420,15 @@ export class SyncEngine {
 		}
 	}
 
-	private remoteChanged(remote: RemoteFileInfo, record: { remoteModTime: number; contentHash: string }): boolean {
+	// Encrypted files: contentHash is the plaintext MD5 and the ETag is the
+	// ciphertext's, so compare against remoteHash (the ciphertext MD5 seen at
+	// last sync) or every encrypted file looks remotely changed on every pass.
+	private remoteChanged(
+		remote: RemoteFileInfo,
+		record: { remoteModTime: number; contentHash: string; remoteHash?: string },
+	): boolean {
 		return remote.modifiedTime > record.remoteModTime
-			&& (isMultipartEtag(remote.md5Checksum) || remote.md5Checksum !== record.contentHash);
+			&& (isMultipartEtag(remote.md5Checksum) || remote.md5Checksum !== (record.remoteHash ?? record.contentHash));
 	}
 
 	private classifyPath(
@@ -553,9 +594,13 @@ export class SyncEngine {
 			remoteModTime: remote.modifiedTime,
 		};
 
+		const encrypted = this.isEncrypted(path);
+
 		// Large files: skip the verification-only read entirely. Multipart
 		// ETags aren't whole-file MD5s, so equality checks are meaningless.
-		if (local.size >= HASH_VERIFY_THRESHOLD_BYTES || isMultipartEtag(remote.md5Checksum)) {
+		// Encrypted files are capped below the multipart size and always
+		// compared on decrypted content.
+		if (!encrypted && (local.size >= HASH_VERIFY_THRESHOLD_BYTES || isMultipartEtag(remote.md5Checksum))) {
 			return conflictIssue;
 		}
 
@@ -563,7 +608,12 @@ export class SyncEngine {
 		const localContent = toArrayBuffer(localBytes);
 		const localHash = computeMD5(localContent);
 
-		if (localHash === remote.md5Checksum) {
+		// Ciphertext never matches the local plaintext hash, so an encrypted
+		// file has to be downloaded and decrypted to compare.
+		let remoteContent: ArrayBuffer | null = encrypted ? await this.downloadPlain(remote) : null;
+		const identical = remoteContent ? computeMD5(remoteContent) === localHash : localHash === remote.md5Checksum;
+
+		if (identical) {
 			// Identical content — auto-resolve silently
 			this.stateStore.setRecord(path, {
 				vaultPath: path,
@@ -573,13 +623,14 @@ export class SyncEngine {
 				remoteModTime: remote.modifiedTime,
 				contentHash: localHash,
 				size: local.size,
+				remoteHash: encrypted ? remote.md5Checksum : undefined,
 			});
 			return null;
 		}
 
 		if (this.settings.conflictStrategy === "smart-merge") {
 			const mimeType = guessMimeType(path);
-			const remoteContent = await this.downloadVerified(remote);
+			remoteContent ??= await this.downloadPlain(remote);
 			if (!isProbablyText(localContent, mimeType) || !isProbablyText(remoteContent, mimeType)) {
 				// Binary content — a line merge would corrupt it
 				return conflictIssue;
@@ -591,7 +642,8 @@ export class SyncEngine {
 				// Clean — apply now, never surface to user
 				const mergedBin = new TextEncoder().encode(merged);
 				await this.fs.writeFile(this.root, path, mergedBin);
-				await this.provider.updateFile(remote.id, toArrayBuffer(mergedBin), mimeType);
+				const out = await this.prepareUpload(path, mergedBin);
+				await this.provider.updateFile(remote.id, out.content, mimeType);
 				const hash = computeMD5(toArrayBuffer(mergedBin));
 				const fresh = await this.fs.statFile(this.root, path);
 				this.stateStore.setRecord(path, {
@@ -602,6 +654,7 @@ export class SyncEngine {
 					remoteModTime: Date.now(),
 					contentHash: hash,
 					size: mergedBin.byteLength,
+					remoteHash: out.remoteHash,
 				});
 				result.conflicts++;
 				return null;
@@ -671,7 +724,14 @@ export class SyncEngine {
 						break;
 
 					case "external":
-						if (res.remoteId && this.ui.externalMerge) {
+						if (res.remoteId && this.isEncrypted(res.vaultPath)) {
+							// The external tool reads and uploads raw remote bytes,
+							// which would leak plaintext / write ciphertext into the
+							// vault. Fall back to the built-in merge.
+							this.onNotice?.(`External merge is not available in encrypted folders; merging ${res.vaultPath} in place`);
+							await this.mergeFiles(res.vaultPath, res.remoteId, localMap, remoteMap);
+							result.conflicts++;
+						} else if (res.remoteId && this.ui.externalMerge) {
 							await this.ui.externalMerge(res.vaultPath, res.remoteId);
 							result.conflicts++;
 						}
@@ -706,7 +766,7 @@ export class SyncEngine {
 
 		const localBytes = await this.fs.readFile(this.root, vaultPath);
 		const localContent = toArrayBuffer(localBytes);
-		const remoteContent = await this.downloadVerified(remote);
+		const remoteContent = await this.downloadPlain(remote);
 		if (!isProbablyText(localContent, mimeType) || !isProbablyText(remoteContent, mimeType)) {
 			this.onNotice?.(`Cannot merge binary file: ${vaultPath}`);
 			return;
@@ -720,7 +780,8 @@ export class SyncEngine {
 		await this.fs.writeFile(this.root, vaultPath, mergedBin);
 
 		if (conflicts === 0) {
-			await this.provider.updateFile(remoteId, toArrayBuffer(mergedBin), mimeType);
+			const out = await this.prepareUpload(vaultPath, mergedBin);
+			await this.provider.updateFile(remoteId, out.content, mimeType);
 			const hash = computeMD5(toArrayBuffer(mergedBin));
 			const fresh = await this.fs.statFile(this.root, vaultPath);
 			this.stateStore.setRecord(vaultPath, {
@@ -730,13 +791,14 @@ export class SyncEngine {
 				remoteModTime: Date.now(),
 				contentHash: hash,
 				size: mergedBin.byteLength,
+				remoteHash: out.remoteHash,
 			});
 			this.onNotice?.(`Auto-merged: ${vaultPath}`);
 			return;
 		}
 
 		// Conflicts remain — markers written locally; hand to external tool or leave for user
-		if (this.ui.externalMerge) {
+		if (this.ui.externalMerge && !this.isEncrypted(vaultPath)) {
 			await this.ui.externalMerge(vaultPath, remoteId);
 		} else {
 			this.onNotice?.(
@@ -879,8 +941,11 @@ export class SyncEngine {
 				const folderName = getFileName(action.vaultPath);
 				// Providers take a folder id, not a path. They coincide on S3; on
 				// Google Drive passing the path made every folder create fail.
-				const parentId = await this.provider.getRemoteFolderId(parentPath);
-				const folderId = await this.provider.createFolder(parentId, folderName);
+				const parentId = await this.provider.getRemoteFolderId(await this.remotePath(parentPath));
+				const remoteName = this.isEncrypted(action.vaultPath)
+					? await this.encryption.remoteName(action.vaultPath)
+					: folderName;
+				const folderId = await this.provider.createFolder(parentId, remoteName);
 				this.stateStore.setRecord(action.vaultPath, {
 					vaultPath: action.vaultPath,
 					remoteId: folderId,
@@ -918,22 +983,26 @@ export class SyncEngine {
 
 	// ---------- file actions ----------
 
+	// Returns false when the action turned out to be a no-op (nothing
+	// transferred), so the caller doesn't count it.
 	private async executeAction(
 		action: SyncAction,
 		localMap: Map<string, LocalFileEntry>,
 		remoteMap: Map<string, RemoteFileInfo>
-	): Promise<void> {
+	): Promise<boolean> {
 		switch (action.type) {
 			case "upload": {
 				const entry = localMap.get(action.vaultPath)!;
 				const bytes = await this.fs.readFile(this.root, action.vaultPath);
-				const content = toArrayBuffer(bytes);
+				const out = await this.prepareUpload(action.vaultPath, bytes);
 				const parentPath = getParentPath(action.vaultPath);
-				const folderId = await this.provider.getRemoteFolderId(parentPath);
-				const fileName = getFileName(action.vaultPath);
+				const folderId = await this.provider.getRemoteFolderId(await this.remotePath(parentPath));
+				const fileName = this.isEncrypted(action.vaultPath)
+					? await this.encryption.remoteName(action.vaultPath)
+					: getFileName(action.vaultPath);
 				const mimeType = guessMimeType(action.vaultPath);
-				const remoteId = await this.provider.uploadFile(folderId, fileName, content, mimeType);
-				const hash = computeMD5(content);
+				const remoteId = await this.provider.uploadFile(folderId, fileName, out.content, mimeType);
+				const hash = computeMD5(toArrayBuffer(bytes));
 
 				this.stateStore.setRecord(action.vaultPath, {
 					vaultPath: action.vaultPath,
@@ -943,13 +1012,14 @@ export class SyncEngine {
 					remoteModTime: Date.now(),
 					contentHash: hash,
 					size: bytes.byteLength,
+					remoteHash: out.remoteHash,
 				});
-				break;
+				return true;
 			}
 
 			case "download": {
 				const remote = remoteMap.get(action.vaultPath)!;
-				const content = await this.downloadVerified(remote);
+				const content = await this.downloadPlain(remote);
 				await this.fs.writeFile(this.root, action.vaultPath, new Uint8Array(content));
 
 				const hash = computeMD5(content);
@@ -963,16 +1033,17 @@ export class SyncEngine {
 					remoteModTime: remote.modifiedTime,
 					contentHash: hash,
 					size: content.byteLength,
+					remoteHash: this.isEncrypted(action.vaultPath) ? remote.md5Checksum : undefined,
 				});
-				break;
+				return true;
 			}
 
 			case "update-remote": {
 				const bytes = await this.fs.readFile(this.root, action.vaultPath);
-				const content = toArrayBuffer(bytes);
+				const out = await this.prepareUpload(action.vaultPath, bytes);
 				const mimeType = guessMimeType(action.vaultPath);
-				await this.provider.updateFile(action.remoteId, content, mimeType);
-				const hash = computeMD5(content);
+				await this.provider.updateFile(action.remoteId, out.content, mimeType);
+				const hash = computeMD5(toArrayBuffer(bytes));
 				const fresh = await this.fs.statFile(this.root, action.vaultPath);
 
 				const record = this.stateStore.getRecord(action.vaultPath)!;
@@ -980,42 +1051,77 @@ export class SyncEngine {
 				record.remoteModTime = Date.now();
 				record.contentHash = hash;
 				record.size = bytes.byteLength;
+				record.remoteHash = out.remoteHash;
 				this.stateStore.setRecord(action.vaultPath, record);
-				break;
+				return true;
 			}
 
 			case "update-local": {
 				const remote = remoteMap.get(action.vaultPath)!;
-				const content = await this.downloadVerified(remote);
-				await this.fs.writeFile(this.root, action.vaultPath, new Uint8Array(content));
-
+				const content = await this.downloadPlain(remote);
 				const hash = computeMD5(content);
+				const record = this.stateStore.getRecord(action.vaultPath)!;
+				const encrypted = this.isEncrypted(action.vaultPath);
+
+				// Another device re-uploaded identical plaintext (new nonce,
+				// new ETag). Rewriting it would bump the local mtime and can
+				// start a cross-device loop; just note the new ciphertext.
+				if (encrypted && hash === record.contentHash) {
+					record.remoteModTime = remote.modifiedTime;
+					record.remoteHash = remote.md5Checksum;
+					this.stateStore.setRecord(action.vaultPath, record);
+					return false;
+				}
+
+				await this.fs.writeFile(this.root, action.vaultPath, new Uint8Array(content));
 				const fresh = await this.fs.statFile(this.root, action.vaultPath);
 
-				const record = this.stateStore.getRecord(action.vaultPath)!;
 				record.localModTime = fresh?.mtimeMs ?? Date.now();
 				record.remoteModTime = remote.modifiedTime;
 				record.contentHash = hash;
 				record.size = content.byteLength;
+				record.remoteHash = encrypted ? remote.md5Checksum : undefined;
 				this.stateStore.setRecord(action.vaultPath, record);
-				break;
+				return true;
 			}
 
 			case "delete-local": {
 				await this.fs.deleteFile(this.root, action.vaultPath);
 				this.stateStore.removeRecord(action.vaultPath);
-				break;
+				return true;
 			}
 
 			case "delete-remote": {
 				await this.provider.deleteFile(action.remoteId);
 				this.stateStore.removeRecord(action.vaultPath);
-				break;
+				return true;
 			}
 		}
+		return true;
 	}
 
 	// ---------- helpers ----------
+
+	private async remotePath(plainPath: string): Promise<string> {
+		return this.encryption.toRemotePath(plainPath);
+	}
+
+	// Bytes to send for a local file: ciphertext in an encrypted folder (with
+	// its MD5, which is what the remote ETag will be), the bytes as-is
+	// otherwise.
+	private async prepareUpload(
+		vaultPath: string,
+		plaintext: Uint8Array,
+	): Promise<{ content: ArrayBuffer; remoteHash?: string }> {
+		if (!this.isEncrypted(vaultPath)) return { content: toArrayBuffer(plaintext) };
+		if (plaintext.byteLength + CONTENT_OVERHEAD_BYTES >= MULTIPART_THRESHOLD_BYTES) {
+			throw new Error(
+				`${vaultPath} is too large for an encrypted folder (limit ${Math.floor(MULTIPART_THRESHOLD_BYTES / 1024 / 1024)} MB)`
+			);
+		}
+		const content = toArrayBuffer(await this.encryption.encrypt(vaultPath, plaintext));
+		return { content, remoteHash: computeMD5(content) };
+	}
 
 	// A download whose bytes don't match the listing's ETag is stale: iOS's
 	// native HTTP stack can serve a cached GET body for the same object URL.
@@ -1031,8 +1137,20 @@ export class SyncEngine {
 		return content;
 	}
 
+	// Verified download, decrypted when the path is in an encrypted folder.
+	// The ETag check runs on the ciphertext, before decryption.
+	private async downloadPlain(remote: RemoteFileInfo): Promise<ArrayBuffer> {
+		const content = await this.downloadVerified(remote);
+		if (!this.isEncrypted(remote.path)) return content;
+		return toArrayBuffer(await this.encryption.decrypt(remote.path, new Uint8Array(content)));
+	}
+
 	private shouldSkip(path: string): boolean {
-		return isDotPath(path) || shouldExclude(path, this.settings.excludePatterns);
+		return isDotPath(path)
+			|| shouldExclude(path, this.settings.excludePatterns)
+			// Locked encrypted folder: invisible to planning, so neither its
+			// files nor its tracked records can produce any action.
+			|| this.encryption.isLocked(path);
 	}
 
 	private countAction(action: SyncAction, result: SyncResult): void {
