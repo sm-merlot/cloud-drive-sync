@@ -11,6 +11,7 @@ import { isLineMergeable } from "../util/binary-guard";
 import { HASH_VERIFY_THRESHOLD_BYTES, MULTIPART_THRESHOLD_BYTES } from "../util/constants";
 import { CONTENT_OVERHEAD_BYTES, type FolderKeyFile } from "../crypto/folder-crypto";
 import { isAtRestFile } from "../crypto/at-rest";
+import type { AtRestCodec, AtRestFileCodec } from "./at-rest-session";
 import { EncryptionAdmin, EncryptionAdminError, type EncryptionAdminOptions, type EncryptionProbe } from "./encryption-admin";
 import { FolderEncryption, type EncryptionSettings, type LockedFolder } from "./folder-encryption";
 
@@ -44,6 +45,10 @@ export interface SyncEngineSettings {
 	conflictStrategy: ConflictStrategy;
 	excludePatterns: string[];
 	debugMode?: boolean;
+	// Merges conflicted files in encrypted-at-rest folders, decrypted in
+	// memory, when their folder is unlocked here. Without it (or while
+	// locked) such conflicts are Local/Remote only.
+	atRestCodec?: AtRestCodec;
 	// Per-folder encryption. Absent = no folders configured; remote key files
 	// are still detected and their folders locked.
 	encryption?: EncryptionSettings;
@@ -698,6 +703,11 @@ export class SyncEngine {
 			remoteModTime: remote.modifiedTime,
 		};
 
+		if (isAtRestFile(path) && this.settings.atRestCodec) {
+			const handled = await this.resolveAtRestConflict(path, remote, result);
+			return handled ? null : conflictIssue;
+		}
+
 		const encrypted = this.isEncrypted(path);
 
 		// Large files: skip the verification-only read entirely. Multipart
@@ -828,7 +838,7 @@ export class SyncEngine {
 						break;
 
 					case "external":
-						if (res.remoteId && this.isEncrypted(res.vaultPath)) {
+						if (res.remoteId && (this.isEncrypted(res.vaultPath) || isAtRestFile(res.vaultPath))) {
 							// The external tool reads and uploads raw remote bytes,
 							// which would leak plaintext / write ciphertext into the
 							// vault. Fall back to the built-in merge.
@@ -857,6 +867,86 @@ export class SyncEngine {
 		}
 	}
 
+	// A conflicted file in an encrypted-at-rest folder, during sync. With the
+	// folder unlocked: identical plaintext (the same edit on two devices)
+	// resolves silently, and under smart-merge a clean merge is applied.
+	// Returns false when the user has to decide.
+	private async resolveAtRestConflict(path: string, remote: RemoteFileInfo, result: SyncResult): Promise<boolean> {
+		const codec = await this.settings.atRestCodec!.open(path);
+		if (!codec) return false;
+		const localBytes = await this.fs.readFile(this.root, path);
+		const remoteBytes = new Uint8Array(await this.downloadPlain(remote));
+		let localPlain: Uint8Array;
+		let remotePlain: Uint8Array;
+		try {
+			localPlain = await codec.decrypt(localBytes);
+			remotePlain = await codec.decrypt(remoteBytes);
+		} catch {
+			return false; // another key generation or tampering: let the user pick
+		}
+
+		if (computeMD5(toArrayBuffer(localPlain)) === computeMD5(toArrayBuffer(remotePlain))) {
+			// Same note, different nonce: adopt the remote ciphertext so both
+			// sides hold identical bytes
+			await this.fs.writeFile(this.root, path, remoteBytes);
+			await this.recordAtRest(path, remote.id, remote.parentId, remoteBytes, remote.modifiedTime);
+			return true;
+		}
+		if (this.settings.conflictStrategy !== "smart-merge") return false;
+		return this.applyAtRestMerge(path, remote, codec, localPlain, remotePlain, result, false);
+	}
+
+	// Merge decrypted text; write the result encrypted. A clean merge is
+	// uploaded. With conflicts, the markers are written locally only when
+	// `keepMarkers` (an explicit Merge), so the user can fix them in Private
+	// notes; otherwise nothing changes.
+	private async applyAtRestMerge(
+		path: string,
+		remote: RemoteFileInfo,
+		codec: AtRestFileCodec,
+		localPlain: Uint8Array,
+		remotePlain: Uint8Array,
+		result: SyncResult,
+		keepMarkers: boolean,
+	): Promise<boolean> {
+		const mime = guessMimeType(codec.plainPath);
+		if (!isLineMergeable(codec.plainPath, toArrayBuffer(localPlain), mime)
+			|| !isLineMergeable(codec.plainPath, toArrayBuffer(remotePlain), mime)) {
+			return false;
+		}
+		const { text, conflicts } = merge2way(new TextDecoder().decode(localPlain), new TextDecoder().decode(remotePlain));
+		if (conflicts > 0 && !keepMarkers) return false;
+		const merged = await codec.encrypt(new TextEncoder().encode(text));
+		await this.fs.writeFile(this.root, path, merged);
+		if (conflicts > 0) {
+			this.onNotice?.(`${conflicts} conflict${conflicts === 1 ? "" : "s"} in ${codec.plainPath}: markers added. Resolve them in Private notes; your next save uploads the result.`);
+			// Record the remote version as seen, so the next sync doesn't
+			// overwrite the markers with it; the user's next save uploads.
+			await this.recordAtRest(path, remote.id, remote.parentId, merged, remote.modifiedTime);
+			const record = this.stateStore.getRecord(path)!;
+			record.contentHash = remote.md5Checksum;
+			this.stateStore.setRecord(path, record);
+			return true;
+		}
+		await this.provider.updateFile(remote.id, toArrayBuffer(merged), guessMimeType(path));
+		await this.recordAtRest(path, remote.id, remote.parentId, merged, Date.now());
+		result.conflicts++;
+		return true;
+	}
+
+	private async recordAtRest(path: string, remoteId: string, remoteFolderId: string, bytes: Uint8Array, remoteModTime: number): Promise<void> {
+		const fresh = await this.fs.statFile(this.root, path);
+		this.stateStore.setRecord(path, {
+			vaultPath: path,
+			remoteId,
+			remoteFolderId,
+			localModTime: fresh?.mtimeMs ?? Date.now(),
+			remoteModTime,
+			contentHash: computeMD5(toArrayBuffer(bytes)),
+			size: bytes.byteLength,
+		});
+	}
+
 	private async mergeFiles(
 		vaultPath: string,
 		remoteId: string,
@@ -866,6 +956,24 @@ export class SyncEngine {
 		const local = localMap.get(vaultPath);
 		if (!local) return;
 		const remote = remoteMap.get(vaultPath)!;
+
+		if (isAtRestFile(vaultPath)) {
+			const codec = await this.settings.atRestCodec?.open(vaultPath);
+			if (!codec) {
+				this.onNotice?.(`Unlock the folder in Private notes, then sync again to merge ${vaultPath}`);
+				return;
+			}
+			try {
+				const localPlain = await codec.decrypt(await this.fs.readFile(this.root, vaultPath));
+				const remotePlain = await codec.decrypt(new Uint8Array(await this.downloadPlain(remote)));
+				const ok = await this.applyAtRestMerge(vaultPath, remote, codec, localPlain, remotePlain, { conflicts: 0 } as SyncResult, true);
+				if (!ok) this.onNotice?.(`Cannot merge ${codec.plainPath}: not a text note. Choose Local or Remote instead.`);
+				else this.onNotice?.(`Merged ${codec.plainPath}`);
+			} catch {
+				this.onNotice?.(`Cannot merge ${vaultPath}: one side can't be decrypted. Choose Local or Remote instead.`);
+			}
+			return;
+		}
 		const mimeType = guessMimeType(vaultPath);
 
 		const localBytes = await this.fs.readFile(this.root, vaultPath);

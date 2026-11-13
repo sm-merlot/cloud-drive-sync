@@ -8,9 +8,14 @@ export class SyncResultsModal extends Modal {
 	private resolutions: Map<string, SyncIssueResolution> = new Map();
 	private resolvePromise: ((value: SyncIssueResolution[]) => void) | null = null;
 
-	constructor(app: App, issues: SyncIssue[]) {
+	// Display names for paths that differ from what's on disk: private notes
+	// (encrypted names) show their real title while their folder is unlocked
+	private labels: Map<string, string>;
+
+	constructor(app: App, issues: SyncIssue[], labels: Map<string, string> = new Map()) {
 		super(app);
 		this.issues = issues;
+		this.labels = labels;
 	}
 
 	onOpen(): void {
@@ -117,7 +122,7 @@ export class SyncResultsModal extends Modal {
 		const current = this.resolutions.get(issue.vaultPath);
 		const resolved = current?.resolution;
 
-		const setting = new Setting(containerEl).setName(issue.vaultPath);
+		const setting = new Setting(containerEl).setName(this.labels.get(issue.vaultPath) ?? issue.vaultPath);
 
 		if (issue.localModTime && issue.remoteModTime) {
 			setting.setDesc(
@@ -151,7 +156,9 @@ export class SyncResultsModal extends Modal {
 				});
 			});
 
-		if (Platform.isDesktop && allowMerge) {
+		// In-app merge works everywhere for private notes (decrypted in memory);
+		// for other files Merge can hand off to a desktop merge tool
+		if ((Platform.isDesktop || issue.vaultPath.endsWith(".cdse")) && allowMerge) {
 			setting.addButton((btn) => {
 				btn.setButtonText("Merge");
 				if (resolved === "merge") btn.setCta();
@@ -185,7 +192,7 @@ export class SyncResultsModal extends Modal {
 		const isRetrying = current?.resolution === "retry";
 
 		new Setting(containerEl)
-			.setName(issue.vaultPath)
+			.setName(this.labels.get(issue.vaultPath) ?? issue.vaultPath)
 			.setDesc(issue.errorMessage || "Unknown error")
 			.addButton((btn) => {
 				btn.setButtonText("Retry");
