@@ -2,6 +2,7 @@ import { FileView, MarkdownRenderer, Notice, TFile, setIcon, type WorkspaceLeaf 
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { markdownEditing } from "./markdown-editor";
 import type { AtRestSession } from "@cloud-drive-sync/core";
 import type CloudSyncPlugin from "../main";
 import { ENCRYPTED_NOTE_VIEW } from "./at-rest-manager";
@@ -131,6 +132,7 @@ export class EncryptedNoteView extends FileView {
 				doc: this.text,
 				extensions: [
 					history(),
+					markdownEditing(), // before the default keymap, so Enter continues lists
 					keymap.of([...defaultKeymap, ...historyKeymap]),
 					EditorView.lineWrapping,
 					EditorView.updateListener.of((u) => {

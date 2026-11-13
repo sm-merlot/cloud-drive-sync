@@ -9,10 +9,13 @@
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
 	},
 	"dependencies": {
-		"@cloud-drive-sync/core": "*"
+		"@cloud-drive-sync/core": "*",
+		"@codemirror/lang-markdown": "^6.5.2"
 	},
 	"devDependencies": {
 		"@codemirror/commands": "^6.11.1",
+		"@codemirror/language": "^6.13.1",
+		"@lezer/highlight": "^1.2.5",
 		"@types/node": "^22.0.0",
 		"builtin-modules": "^3.3.0",
 		"esbuild": "0.25.5",
