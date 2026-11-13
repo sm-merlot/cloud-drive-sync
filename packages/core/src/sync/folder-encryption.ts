@@ -18,6 +18,7 @@ import {
 	decryptName,
 	encryptContent,
 	encryptName,
+	folderMode,
 	parseKeyFile,
 	unlockKeyFile,
 	type FolderKeyFile,
@@ -37,8 +38,12 @@ export interface EncryptionSettings {
 
 export class UnlockCache {
 	readonly entries = new Map<string, CachedUnlock>();
+	// Parsed key files by folder, keyed on ETag: lets at-rest folders (which
+	// need no password) skip re-downloading the key file every pass
+	readonly keyFiles = new Map<string, { etag: string; keyFile: FolderKeyFile }>();
 	clear(): void {
 		this.entries.clear();
+		this.keyFiles.clear();
 	}
 }
 
@@ -65,6 +70,9 @@ export class FolderEncryption {
 	// Survives across passes: PBKDF2 at 600k iterations runs once per
 	// (folder, key file version, password), not once per sync.
 	private unlockCache: Map<string, CachedUnlock>;
+	private keyFileCache: Map<string, { etag: string; keyFile: FolderKeyFile }>;
+	// At-rest folders this pass: synced as opaque files, never locked
+	private atRest = new Set<string>();
 
 	private locked = new Map<string, string>();
 	private unlocked = new Map<string, UnlockedFolder>();
@@ -75,6 +83,18 @@ export class FolderEncryption {
 		private settings: EncryptionSettings,
 	) {
 		this.unlockCache = settings.unlockCache?.entries ?? new Map();
+		this.keyFileCache = settings.unlockCache?.keyFiles ?? new Map();
+	}
+
+	// Files here are already ciphertext on the device; the engine copies them
+	// as-is and needs no keys.
+	isAtRest(path: string): boolean {
+		for (const f of this.atRest) if (isUnder(path, f)) return true;
+		return false;
+	}
+
+	get atRestFolders(): string[] {
+		return Array.from(this.atRest);
 	}
 
 	get lockedFolders(): LockedFolder[] {
@@ -100,6 +120,7 @@ export class FolderEncryption {
 	async prepare(remote: RemoteFileInfo[]): Promise<RemoteFileInfo[]> {
 		this.locked = new Map();
 		this.unlocked = new Map();
+		this.atRest = new Set();
 		this.remotePathCache = new Map();
 
 		// 1. Key files on the remote. Nested key files (inside another
@@ -159,28 +180,42 @@ export class FolderEncryption {
 		return out;
 	}
 
-	// Returns a lock reason, or null when the folder is unlocked.
+	// Returns a lock reason, or null when the folder is unlocked or at rest.
 	private async tryUnlock(folder: string, keyInfo: RemoteFileInfo | undefined): Promise<string | null> {
 		if (!keyInfo) return `Key file missing for ${folder}`;
+		const etag = keyInfo.md5Checksum;
+
+		// The key file says which mode the folder is in, and needs no password
+		// to read.
+		let keyFile: FolderKeyFile;
+		const cachedFile = this.keyFileCache.get(folder);
+		if (cachedFile && etag && cachedFile.etag === etag) {
+			keyFile = cachedFile.keyFile;
+		} else {
+			try {
+				const bytes = await this.provider.downloadFile(keyInfo.id);
+				// Same stale-cache guard as file downloads (iOS, DEV-208)
+				if (etag && computeMD5(bytes) !== etag) return `Key file for ${folder} is stale; next sync retries`;
+				keyFile = parseKeyFile(new TextDecoder().decode(bytes));
+			} catch (e) {
+				return `Unreadable key file for ${folder}: ${e instanceof Error ? e.message : String(e)}`;
+			}
+			if (etag) this.keyFileCache.set(folder, { etag, keyFile });
+		}
+
+		if (folderMode(keyFile) === "at-rest") {
+			this.atRest.add(folder);
+			return null;
+		}
+
 		const password = this.settings.passwordFor(folder);
 		if (!password) return `No password for ${folder}`;
 
 		const cached = this.unlockCache.get(folder);
-		const etag = keyInfo.md5Checksum;
 		if (cached && etag && cached.etag === etag && cached.password === password) {
 			if (cached.keyFile.rotation) return `Password change in progress for ${folder}`;
 			this.unlocked.set(folder, cached);
 			return null;
-		}
-
-		let keyFile: FolderKeyFile;
-		try {
-			const bytes = await this.provider.downloadFile(keyInfo.id);
-			// Same stale-cache guard as file downloads (iOS, DEV-208)
-			if (etag && computeMD5(bytes) !== etag) return `Key file for ${folder} is stale; next sync retries`;
-			keyFile = parseKeyFile(new TextDecoder().decode(bytes));
-		} catch (e) {
-			return `Unreadable key file for ${folder}: ${e instanceof Error ? e.message : String(e)}`;
 		}
 
 		let keys: FolderKeys;

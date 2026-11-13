@@ -7,7 +7,8 @@ import { S3Provider } from "../../src/providers/s3/s3-provider";
 import { SyncEngine } from "../../src/sync/sync-engine";
 import type { SyncStateStore } from "../../src/sync/sync-state";
 import { MULTIPART_THRESHOLD_BYTES } from "../../src/util/constants";
-import { isEncryptedContent } from "../../src/crypto/folder-crypto";
+import { createKeyFile, isEncryptedContent, serializeKeyFile } from "../../src/crypto/folder-crypto";
+import { encryptAtRest, toAtRestPath } from "../../src/crypto/at-rest";
 import { FakeLocalFs, FakeUI, makeState } from "../helpers/fakes";
 import { NodeHttpClient } from "./node-http-client";
 import { DOMParser as LinkedomDOMParser } from "linkedom";
@@ -222,4 +223,40 @@ describe.skipIf(!ENDPOINT || !ROOT)("rclone serve s3 integration", () => {
 		expect(after.has("Journal/.cds-folder-key.json")).toBe(false);
 		expect(text(after.get("Journal/2026-03-04 talk with doctor.md"))).toBe(`${secret} one`);
 	}, 60_000);
+
+	it("at-rest folder: opaque files sync byte-for-byte, nothing readable on disk", async () => {
+		const bucket = await newBucket();
+		const secret = "AT-REST-CANARY-91c2";
+		const { keyFile, keys } = await createKeyFile("pw1", { ...FAST, mode: "at-rest" });
+		// The key file goes to the server the way the plugin will write it
+		const provider = new S3Provider({ endpoint: ENDPOINT!, bucket, ...CREDS }, http);
+		await provider.createFolder("", "Journal");
+		await provider.uploadFile("Journal", ".cds-folder-key.json", new TextEncoder().encode(serializeKeyFile(keyFile)).buffer as ArrayBuffer, "application/json");
+
+		const a = device(bucket);
+		const written = new Map<string, Uint8Array>();
+		for (const plain of ["Journal/2026 doctor.md", "Journal/Health (private)/meds.md"]) {
+			const path = await toAtRestPath(keys, "Journal", plain, true);
+			const bytes = await encryptAtRest(keys, plain, new TextEncoder().encode(`${secret} ${plain}`));
+			written.set(path, bytes);
+			a.fs.files.set(path, { bytes, mtimeMs: Date.now() });
+			const parts = path.split("/");
+			for (let i = 1; i < parts.length; i++) a.fs.folders.add(parts.slice(0, i).join("/"));
+		}
+		const ra = await a.engine.sync();
+		expect(ra.failures).toEqual([]);
+		expect(ra.lockedFolders).toEqual([]);
+
+		for (const [rel, bytes] of onDisk(bucket)) {
+			expect(rel).not.toMatch(/doctor|Health|meds/);
+			expect(bytes.includes(secret)).toBe(false);
+		}
+
+		const b = device(bucket); // no password, not configured
+		const rb = await b.engine.sync();
+		expect(rb.lockedFolders).toEqual([]);
+		for (const [p, bytes] of written) expect(b.fs.files.get(p)?.bytes).toEqual(bytes);
+		expect(quiet(await a.engine.sync())).toEqual([0, 0, 0, 0]);
+		expect(quiet(await b.engine.sync())).toEqual([0, 0, 0, 0]);
+	});
 });
