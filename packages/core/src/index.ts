@@ -12,3 +12,4 @@ export * from "./util/hash";
 export * from "./util/merge";
 export * from "./util/constants";
 export * from "./util/binary-guard";
+export * from "./crypto/folder-crypto";
