@@ -10,6 +10,7 @@ import { merge2way } from "../util/merge";
 import { isLineMergeable } from "../util/binary-guard";
 import { HASH_VERIFY_THRESHOLD_BYTES, MULTIPART_THRESHOLD_BYTES } from "../util/constants";
 import { CONTENT_OVERHEAD_BYTES } from "../crypto/folder-crypto";
+import { isAtRestFile } from "../crypto/at-rest";
 import { EncryptionAdmin, EncryptionAdminError, type EncryptionAdminOptions, type EncryptionProbe } from "./encryption-admin";
 import { FolderEncryption, type EncryptionSettings, type LockedFolder } from "./folder-encryption";
 
@@ -143,7 +144,7 @@ export class SyncEngine {
 			this.progress("Planning...");
 			await this.healStaleLocalModTimes(localMap);
 			const preIssues: SyncIssue[] = [];
-			const actions = this.computeActions(localMap, remoteMap, preIssues);
+			const actions = this.guardAtRest(this.computeActions(localMap, remoteMap, preIssues), preIssues);
 			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
 
 			// 4. Hash-check conflict actions; auto-smart-merge clean cases immediately
@@ -329,6 +330,9 @@ export class SyncEngine {
 				);
 			}
 
+			const guarded = this.guardAtRest(actions, preIssues);
+			actions.length = 0;
+			actions.push(...guarded);
 			issues.push(...preIssues);
 
 			for (const action of actions) {
@@ -436,6 +440,22 @@ export class SyncEngine {
 		} finally {
 			this.syncing = false;
 		}
+	}
+
+	// An encrypted-at-rest folder must only ever hold .cdse ciphertext. A
+	// plaintext file there (written by another plugin, or copied in by hand)
+	// is a leak: never upload it, and tell the user.
+	private guardAtRest(actions: SyncAction[], issues: SyncIssue[]): SyncAction[] {
+		return actions.filter((a) => {
+			if (a.type !== "upload" && a.type !== "update-remote") return true;
+			if (!this.encryption.isAtRest(a.vaultPath) || isAtRestFile(a.vaultPath)) return true;
+			issues.push({
+				vaultPath: a.vaultPath,
+				type: "error",
+				errorMessage: "Not uploaded: unencrypted file inside an encrypted-at-rest folder. Open Private notes to encrypt or remove it.",
+			});
+			return false;
+		});
 	}
 
 	// ---------- classification ----------

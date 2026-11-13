@@ -534,3 +534,26 @@ describe("at-rest folders: the engine syncs them as opaque files", () => {
 		expect(r.uploaded).toBe(0);
 	});
 });
+
+describe("at-rest folders: plaintext inside is never uploaded", () => {
+	it("a stray .md in an at-rest folder is refused with an issue; .cdse files still sync", async () => {
+		const provider = makeProvider();
+		const created = await createKeyFile("pw1", { iterations: 1000, mode: "at-rest" });
+		provider.setObject(KEY_PATH, serializeKeyFile(created.keyFile), tick());
+		const a = device(provider, null, { configured: false });
+		const good = await toAtRestPath(created.keys, FOLDER, "Journal/ok.md", true);
+		a.fs.files.set(good, { bytes: await encryptAtRest(created.keys, "Journal/ok.md", new TextEncoder().encode("ok")), mtimeMs: tick() });
+		a.fs.setFile("Journal/Leaked.md", "PLAINTEXT LEAK", tick());
+
+		const r = await a.engine.sync();
+		expect(provider.objects.has(good)).toBe(true);
+		expect(provider.objects.has("Journal/Leaked.md")).toBe(false);
+		expect(a.ui.surfacedIssues.map((i) => [i.vaultPath, i.type])).toEqual([["Journal/Leaked.md", "error"]]);
+		expect(r.uploaded).toBe(1);
+
+		// and through the file-watcher path
+		a.fs.setFile("Journal/Leaked.md", "PLAINTEXT LEAK 2", tick());
+		await a.engine.syncPaths(new Set(["Journal/Leaked.md"]));
+		expect(provider.objects.has("Journal/Leaked.md")).toBe(false);
+	});
+});
