@@ -53,6 +53,8 @@ export default class CloudSyncPlugin extends Plugin {
 	private statusBarEl: HTMLElement | null = null;
 	private ribbonEl: HTMLElement | null = null;
 	private mobileActionEl: HTMLElement | null = null;
+	// Phone only: opens Private notes (the ribbon isn't reachable there)
+	private mobilePrivateEl: HTMLElement | null = null;
 	private pendingPaths: Set<string> = new Set();
 	private debounceTimer: number | null = null;
 	private currentStage = "";
@@ -144,6 +146,8 @@ export default class CloudSyncPlugin extends Plugin {
 		if (this.debounceTimer !== null) window.clearTimeout(this.debounceTimer);
 		this.mobileActionEl?.remove();
 		this.mobileActionEl = null;
+		this.mobilePrivateEl?.remove();
+		this.mobilePrivateEl = null;
 	}
 
 	// Phone only: add a "cloud" action to the active view's header using
@@ -155,6 +159,8 @@ export default class CloudSyncPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("active-leaf-change", () => this.addMobileActionToLeaf())
 		);
+		// The lock button shows only once an at-rest folder is known here
+		this.register(this.atRest.onChange(() => this.addMobilePrivateAction()));
 	}
 
 	private addMobileActionToLeaf(): void {
@@ -162,7 +168,17 @@ export default class CloudSyncPlugin extends Plugin {
 		if (!leaf || !(leaf.view instanceof ItemView)) return;
 		this.mobileActionEl?.remove();
 		this.mobileActionEl = leaf.view.addAction("cloud", "Cloud Sync", () => this.runSync(true));
+		this.addMobilePrivateAction();
 		this.updateRibbon(this.isGoogleAuthExpired() ? "error" : "idle");
+	}
+
+	private addMobilePrivateAction(): void {
+		this.mobilePrivateEl?.remove();
+		this.mobilePrivateEl = null;
+		if (!Platform.isPhone || this.atRest.sessions.size === 0) return;
+		const leaf = this.app.workspace.getMostRecentLeaf();
+		if (!leaf || !(leaf.view instanceof ItemView)) return;
+		this.mobilePrivateEl = leaf.view.addAction("lock", "Private notes", () => void this.openPrivateNotes());
 	}
 
 	private setupFileWatcher(): void {
