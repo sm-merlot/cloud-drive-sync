@@ -107,6 +107,24 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 					})
 			);
 
+		new Setting(containerEl)
+			.setName("Mobile file size limit (MB)")
+			.setDesc(
+				"On phones and tablets, files larger than this are not downloaded or uploaded, and are listed as too big for this device. Large files can run the mobile app out of memory. 0 = no limit. Desktop has no limit."
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder("20")
+					.setValue(String(this.plugin.settings.mobileMaxFileSizeMB))
+					.onChange(async (value) => {
+						const num = Number(value);
+						if (value.trim() !== "" && Number.isFinite(num) && num >= 0) {
+							this.plugin.settings.mobileMaxFileSizeMB = num;
+							await this.plugin.saveSettings();
+						}
+					})
+			);
+
 		if (Platform.isDesktop) {
 			new Setting(containerEl)
 				.setName("Merge tool command")

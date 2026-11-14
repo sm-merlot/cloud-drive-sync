@@ -14,6 +14,7 @@ export interface S3Object {
 	key: string;
 	lastModified: number;
 	etag: string;
+	size?: number;
 }
 
 // ---------- SigV4 utilities ----------
@@ -220,7 +221,14 @@ export class S3Api {
 				const key = el.querySelector("Key")?.textContent ?? "";
 				const lm = el.querySelector("LastModified")?.textContent ?? "";
 				const etag = (el.querySelector("ETag")?.textContent ?? "").replace(/"/g, "");
-				if (key) results.push({ key, lastModified: new Date(lm).getTime(), etag });
+				const sizeText = el.querySelector("Size")?.textContent;
+				const size = sizeText ? Number(sizeText) : NaN;
+				if (key) {
+					results.push({
+						key, lastModified: new Date(lm).getTime(), etag,
+						size: Number.isFinite(size) ? size : undefined,
+					});
+				}
 			}
 
 			const truncated = doc.querySelector("IsTruncated")?.textContent === "true";

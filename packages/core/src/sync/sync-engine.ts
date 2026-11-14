@@ -27,6 +27,15 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 	return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
+// Every transfer holds the whole file in memory. Thrown before reading or
+// fetching a file over maxFileSize, so an oversized file never gets buffered.
+class FileTooBigError extends Error {
+	constructor(readonly vaultPath: string, readonly size: number) {
+		super(`${vaultPath} is too big for this device (${size} bytes)`);
+		this.name = "FileTooBigError";
+	}
+}
+
 export interface SyncResult {
 	uploaded: number;
 	downloaded: number;
@@ -39,6 +48,8 @@ export interface SyncResult {
 	lockedFolders: LockedFolder[];
 	// Encrypted-at-rest folders seen this pass (their key files are present)
 	atRestFolders: string[];
+	// Files over maxFileSize, left alone on both sides (type "too-big")
+	tooBig: SyncIssue[];
 }
 
 export interface SyncEngineSettings {
@@ -52,6 +63,10 @@ export interface SyncEngineSettings {
 	// Per-folder encryption. Absent = no folders configured; remote key files
 	// are still detected and their folders locked.
 	encryption?: EncryptionSettings;
+	// Bytes. Files larger than this are not uploaded or downloaded, and are
+	// reported in SyncResult.tooBig instead. Unset or 0 = no limit. Hosts
+	// with tight memory (Obsidian mobile) set it; desktop leaves it unset.
+	maxFileSize?: number;
 }
 
 export class SyncEngine {
@@ -89,7 +104,7 @@ export class SyncEngine {
 	}
 
 	private emptyResult(): SyncResult {
-		return { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [], lockedFolders: [], atRestFolders: [] };
+		return { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, errors: 0, failures: [], lockedFolders: [], atRestFolders: [], tooBig: [] };
 	}
 
 	// Remote listing with encrypted folders resolved: locked folders removed,
@@ -152,7 +167,10 @@ export class SyncEngine {
 			this.progress("Planning...");
 			await this.healStaleLocalModTimes(localMap);
 			const preIssues: SyncIssue[] = [];
-			const actions = this.guardAtRest(this.computeActions(localMap, remoteMap, preIssues), preIssues);
+			const actions = this.dropTooBig(
+				this.guardAtRest(this.computeActions(localMap, remoteMap, preIssues), preIssues),
+				preIssues, localMap, remoteMap, result,
+			);
 			const folderActions = this.computeFolderActions(localFolderPaths, remoteFolderMap);
 
 			// 4. Hash-check conflict actions; auto-smart-merge clean cases immediately
@@ -205,6 +223,10 @@ export class SyncEngine {
 						// Skip quietly: the next sync gets a fresh listing and
 						// classifies it correctly (e.g. delete-local).
 						console.info(`Remote gone, skipping ${action.type} ${action.vaultPath}; next sync will reconcile`);
+						continue;
+					}
+					if (e instanceof FileTooBigError) {
+						this.reportTooBig(e.vaultPath, e.size, result);
 						continue;
 					}
 					const msg = e instanceof Error ? e.message : String(e);
@@ -338,16 +360,18 @@ export class SyncEngine {
 				);
 			}
 
-			const guarded = this.guardAtRest(actions, preIssues);
-			actions.length = 0;
-			actions.push(...guarded);
+			const fileActions = this.dropTooBig(this.guardAtRest(actions, preIssues), preIssues, localMap, remoteMap, result);
 			issues.push(...preIssues);
 
-			for (const action of actions) {
+			for (const action of fileActions) {
 				if (action.type === "conflict") continue;
 				try {
 					if (await this.executeAction(action, localMap, remoteMap)) this.countAction(action, result);
 				} catch (e) {
+					if (e instanceof FileTooBigError) {
+						this.reportTooBig(e.vaultPath, e.size, result);
+						continue;
+					}
 					const msg = e instanceof Error ? e.message : String(e);
 					console.error(`Sync error on ${action.type} ${action.vaultPath}:`, e);
 					const issue: SyncIssue = {
@@ -381,7 +405,7 @@ export class SyncEngine {
 				}
 			}
 
-			for (const action of actions) {
+			for (const action of fileActions) {
 				if (action.type !== "conflict") continue;
 				const local = localMap.get(action.vaultPath);
 				const remote = remoteMap.get(action.vaultPath);
@@ -519,6 +543,9 @@ export class SyncEngine {
 			// produces new ciphertext, which every other device then downloads
 			// and rewrites, so a missed heal turns into a cross-device loop.
 			if (local.size >= HASH_VERIFY_THRESHOLD_BYTES && !this.isEncrypted(path)) continue;
+			// Over the size limit: never read, even an encrypted one. It stays
+			// "changed" and its upload is dropped as too big.
+			if (this.isTooBig(local.size)) continue;
 
 			const bytes = await this.fs.readFile(this.root, path);
 			if (computeMD5(toArrayBuffer(bytes)) !== record.contentHash) continue;
@@ -859,6 +886,10 @@ export class SyncEngine {
 						break;
 				}
 			} catch (e) {
+				if (e instanceof FileTooBigError) {
+					this.reportTooBig(e.vaultPath, e.size, result);
+					continue;
+				}
 				const msg = e instanceof Error ? e.message : String(e);
 				console.error(`Resolution error on ${res.vaultPath}:`, e);
 				result.failures.push({ vaultPath: res.vaultPath, type: "error", remoteId: res.remoteId, errorMessage: msg });
@@ -956,6 +987,8 @@ export class SyncEngine {
 		const local = localMap.get(vaultPath);
 		if (!local) return;
 		const remote = remoteMap.get(vaultPath)!;
+		// Reads both sides (and decrypts both, for at-rest files)
+		this.assertFits(vaultPath, this.transferSize({ type: "conflict", vaultPath, remoteId }, local, remote));
 
 		if (isAtRestFile(vaultPath)) {
 			const codec = await this.settings.atRestCodec?.open(vaultPath);
@@ -1202,6 +1235,10 @@ export class SyncEngine {
 		localMap: Map<string, LocalFileEntry>,
 		remoteMap: Map<string, RemoteFileInfo>
 	): Promise<boolean> {
+		// Backstop for paths that reach here without passing dropTooBig
+		// (issue resolutions, retries): refuse before anything is buffered.
+		this.assertFits(action.vaultPath, this.transferSize(action, localMap.get(action.vaultPath), remoteMap.get(action.vaultPath)));
+
 		switch (action.type) {
 			case "upload": {
 				const entry = localMap.get(action.vaultPath)!;
@@ -1310,6 +1347,79 @@ export class SyncEngine {
 			}
 		}
 		return true;
+	}
+
+	// ---------- size limit ----------
+
+	private isTooBig(size: number): boolean {
+		const max = this.settings.maxFileSize;
+		return !!max && max > 0 && size > max;
+	}
+
+	// Bytes an action would hold in memory, from the side it reads. Deletes
+	// and folder actions move no content. A conflict may read both sides.
+	// undefined when unknown (provider listing without sizes).
+	private transferSize(
+		action: SyncAction,
+		local: LocalFileEntry | undefined,
+		remote: RemoteFileInfo | undefined,
+	): number | undefined {
+		switch (action.type) {
+			case "upload":
+			case "update-remote":
+				return local?.size;
+			case "download":
+			case "update-local":
+				return remote?.size;
+			case "conflict": {
+				const sizes = [local?.size, remote?.size].filter((n): n is number => n !== undefined);
+				return sizes.length > 0 ? Math.max(...sizes) : undefined;
+			}
+			default:
+				return undefined;
+		}
+	}
+
+	// Drops planned transfers of oversized files, and delete-conflicts whose
+	// only resolutions would re-download one. Nothing is written for a
+	// dropped path, sync record included: an oversized remote file stays
+	// "remote only, never synced here", so later syncs plan the same
+	// download and drop it again, rather than reading the missing local copy
+	// as a deletion to push to the remote.
+	private dropTooBig(
+		actions: SyncAction[],
+		issues: SyncIssue[],
+		localMap: Map<string, LocalFileEntry>,
+		remoteMap: Map<string, RemoteFileInfo>,
+		result: SyncResult,
+	): SyncAction[] {
+		if (!this.settings.maxFileSize) return actions;
+
+		const kept = issues.filter((issue) => {
+			if (issue.type !== "delete-conflict") return true;
+			const size = remoteMap.get(issue.vaultPath)?.size;
+			if (size === undefined || !this.isTooBig(size)) return true;
+			this.reportTooBig(issue.vaultPath, size, result);
+			return false;
+		});
+		issues.splice(0, issues.length, ...kept);
+
+		return actions.filter((action) => {
+			const size = this.transferSize(action, localMap.get(action.vaultPath), remoteMap.get(action.vaultPath));
+			if (size === undefined || !this.isTooBig(size)) return true;
+			this.reportTooBig(action.vaultPath, size, result);
+			return false;
+		});
+	}
+
+	private assertFits(vaultPath: string, size: number | undefined): void {
+		if (size !== undefined && this.isTooBig(size)) throw new FileTooBigError(vaultPath, size);
+	}
+
+	private reportTooBig(vaultPath: string, size: number, result: SyncResult): void {
+		if (result.tooBig.some((i) => i.vaultPath === vaultPath)) return;
+		console.info(`Skipping ${vaultPath}: ${size} bytes is over the ${this.settings.maxFileSize}-byte limit`);
+		result.tooBig.push({ vaultPath, type: "too-big", size });
 	}
 
 	// ---------- helpers ----------

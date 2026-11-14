@@ -7,11 +7,15 @@ export interface SyncIssue {
 	// "delete-conflict": deleted on this device but changed remotely since this
 	// device's last sync — a safe default (re-download) has already been applied
 	// by the engine for auto strategies; prompt-style UIs surface it for override.
-	type: "conflict" | "delete-conflict" | "error";
+	// "too-big": over the engine's maxFileSize, so not transferred. Reported in
+	// SyncResult.tooBig only, never passed to resolveSyncIssues.
+	type: "conflict" | "delete-conflict" | "error" | "too-big";
 	remoteId?: string;
 	localModTime?: number;
 	remoteModTime?: number;
 	errorMessage?: string;
+	// bytes; set on "too-big" issues
+	size?: number;
 }
 
 export interface SyncIssueResolution {

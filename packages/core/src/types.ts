@@ -49,6 +49,10 @@ export interface PluginSettings {
 	mergeToolCommand: string;
 	conflictStrategy: ConflictStrategy;
 	debugMode: boolean;
+	// Mobile only: files larger than this are neither downloaded nor uploaded
+	// (each transfer buffers the whole file, which can exhaust the mobile
+	// WebView's memory). 0 = no limit. Desktop never applies a limit.
+	mobileMaxFileSizeMB: number;
 	syncState: SyncState;
 	// Per-folder encryption (Obsidian plugin). Passwords are never stored
 	// here; they live in the OS keychain via Obsidian's secretStorage.
@@ -87,6 +91,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	},
 	conflictStrategy: "prompt",
 	debugMode: false,
+	mobileMaxFileSizeMB: 20,
 	syncIntervalMinutes: 15,
 	syncOnStartup: false,
 	excludePatterns: [],
@@ -121,4 +126,7 @@ export interface RemoteFileInfo {
 	mimeType: string;
 	isFolder: boolean;
 	parentId: string;
+	// byte size from the listing; undefined when the provider doesn't report
+	// one (folders, Google-native docs)
+	size?: number;
 }

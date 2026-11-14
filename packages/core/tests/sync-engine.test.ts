@@ -8,9 +8,10 @@ import { FakeLocalFs, FakeProvider, FakeUI, makeState, record } from "./helpers/
 function makeEngine(
 	fs: FakeLocalFs, provider: FakeProvider, store: SyncStateStore, ui: FakeUI,
 	strategy: "prompt" | "smart-merge" | "latest-wins" | "use-local" | "use-remote" = "prompt",
+	maxFileSize?: number,
 ): SyncEngine {
 	return new SyncEngine(fs, "/root", provider, store, ui, {
-		conflictStrategy: strategy, excludePatterns: [],
+		conflictStrategy: strategy, excludePatterns: [], maxFileSize,
 	});
 }
 
@@ -388,5 +389,153 @@ describe("SyncEngine stale local mtime", () => {
 		const { store } = makeState([record("a.md")]);
 		const result = await makeEngine(fs, provider, store, ui).sync();
 		expect(result.uploaded).toBe(1);
+	});
+});
+
+describe("SyncEngine max file size", () => {
+	const LIMIT = 10;
+	const BIG = "x".repeat(LIMIT + 1);
+	let fs: FakeLocalFs;
+	let provider: FakeProvider;
+	let ui: FakeUI;
+
+	beforeEach(() => {
+		fs = new FakeLocalFs();
+		provider = new FakeProvider();
+		ui = new FakeUI();
+	});
+
+	it("skips and reports an oversized remote file without downloading it", async () => {
+		provider.setObject("video.mov", BIG, 500);
+		const { store } = makeState();
+		const result = await makeEngine(fs, provider, store, ui, "prompt", LIMIT).sync();
+
+		expect(provider.downloadCalls).toBe(0);
+		expect(fs.files.has("video.mov")).toBe(false);
+		expect(result.downloaded).toBe(0);
+		expect(result.errors).toBe(0);
+		expect(result.tooBig).toEqual([{ vaultPath: "video.mov", type: "too-big", size: LIMIT + 1 }]);
+		expect(ui.surfacedIssues).toHaveLength(0);
+		expect(store.getRecord("video.mov")).toBeUndefined();
+	});
+
+	it("never reads a skipped file as a local delete on later syncs", async () => {
+		provider.setObject("video.mov", BIG, 500);
+		const { store } = makeState();
+		const engine = makeEngine(fs, provider, store, ui, "prompt", LIMIT);
+
+		await engine.sync();
+		const second = await engine.sync();
+
+		expect(provider.objects.has("video.mov")).toBe(true);
+		expect(provider.deleted).toEqual([]);
+		expect(provider.downloadCalls).toBe(0);
+		expect(second.deleted).toBe(0);
+		expect(second.errors).toBe(0);
+		expect(second.tooBig.map((i) => i.vaultPath)).toEqual(["video.mov"]);
+		expect(ui.surfacedIssues).toHaveLength(0);
+	});
+
+	it("still syncs files under the limit in the same pass", async () => {
+		provider.setObject("video.mov", BIG, 500);
+		provider.setObject("note.md", "remote", 500);
+		fs.setFile("local.md", "hello", 2000);
+		const { store } = makeState();
+		const result = await makeEngine(fs, provider, store, ui, "prompt", LIMIT).sync();
+
+		expect(result.downloaded).toBe(1);
+		expect(result.uploaded).toBe(1);
+		expect(fs.files.has("note.md")).toBe(true);
+		expect(provider.objects.has("local.md")).toBe(true);
+		expect(result.tooBig.map((i) => i.vaultPath)).toEqual(["video.mov"]);
+	});
+
+	it("does not upload or read an oversized local file", async () => {
+		fs.setFile("clip.mov", BIG, 2000);
+		const { store } = makeState();
+		const result = await makeEngine(fs, provider, store, ui, "prompt", LIMIT).sync();
+
+		expect(fs.readFileCalls).toBe(0);
+		expect(provider.objects.has("clip.mov")).toBe(false);
+		expect(result.uploaded).toBe(0);
+		expect(result.tooBig.map((i) => i.vaultPath)).toEqual(["clip.mov"]);
+	});
+
+	it("skips a remote edit that grew a synced file past the limit, keeping the local copy", async () => {
+		fs.setFile("a.md", "v1", 1000);
+		provider.setObject("a.md", BIG, 2000);
+		const { store } = makeState([record("a.md")]);
+		const before = { ...store.getRecord("a.md")! };
+		const result = await makeEngine(fs, provider, store, ui, "prompt", LIMIT).sync();
+
+		expect(provider.downloadCalls).toBe(0);
+		expect(new TextDecoder().decode(fs.files.get("a.md")!.bytes)).toBe("v1");
+		expect(store.getRecord("a.md")).toEqual(before);
+		expect(result.tooBig.map((i) => i.vaultPath)).toEqual(["a.md"]);
+	});
+
+	it("reports an oversized conflict as too big instead of asking for a resolution", async () => {
+		fs.setFile("a.md", "local edit", 2000);
+		provider.setObject("a.md", BIG, 2000);
+		const { store } = makeState([record("a.md")]);
+		const result = await makeEngine(fs, provider, store, ui, "smart-merge", LIMIT).sync();
+
+		expect(provider.downloadCalls).toBe(0);
+		expect(ui.surfacedIssues).toHaveLength(0);
+		expect(result.tooBig.map((i) => i.vaultPath)).toEqual(["a.md"]);
+	});
+
+	it("reports an oversized delete-conflict as too big instead of re-downloading", async () => {
+		provider.setObject("a.md", BIG, 2000);
+		const { store } = makeState([record("a.md")]);
+		const result = await makeEngine(fs, provider, store, ui, "prompt", LIMIT).sync();
+
+		expect(provider.downloadCalls).toBe(0);
+		expect(provider.objects.has("a.md")).toBe(true);
+		expect(ui.surfacedIssues).toHaveLength(0);
+		expect(result.tooBig.map((i) => i.vaultPath)).toEqual(["a.md"]);
+	});
+
+	it("still propagates a real local delete of a file this device had synced", async () => {
+		// Deleting moves no content, so the limit does not apply.
+		provider.setObject("a.md", BIG, 1000);
+		const { store } = makeState([record("a.md", { remoteModTime: 1000, contentHash: computeMD5(new TextEncoder().encode(BIG).buffer as ArrayBuffer) })]);
+		const result = await makeEngine(fs, provider, store, ui, "prompt", LIMIT).sync();
+
+		expect(result.deleted).toBe(1);
+		expect(provider.objects.has("a.md")).toBe(false);
+		expect(result.tooBig).toHaveLength(0);
+	});
+
+	it("applies the limit to watcher-triggered syncPaths too", async () => {
+		fs.setFile("clip.mov", BIG, 2000);
+		const { store } = makeState();
+		const result = await makeEngine(fs, provider, store, ui, "prompt", LIMIT).syncPaths(new Set(["clip.mov"]));
+
+		expect(provider.objects.has("clip.mov")).toBe(false);
+		expect(result.errors).toBe(0);
+		expect(result.tooBig.map((i) => i.vaultPath)).toEqual(["clip.mov"]);
+	});
+
+	it("without a limit, large files sync as before", async () => {
+		provider.setObject("video.mov", BIG, 500);
+		fs.setFile("clip.mov", BIG, 2000);
+		const { store } = makeState();
+		const result = await makeEngine(fs, provider, store, ui, "prompt").sync();
+
+		expect(result.downloaded).toBe(1);
+		expect(result.uploaded).toBe(1);
+		expect(fs.files.has("video.mov")).toBe(true);
+		expect(provider.objects.has("clip.mov")).toBe(true);
+		expect(result.tooBig).toHaveLength(0);
+	});
+
+	it("a limit of 0 means no limit", async () => {
+		provider.setObject("video.mov", BIG, 500);
+		const { store } = makeState();
+		const result = await makeEngine(fs, provider, store, ui, "prompt", 0).sync();
+
+		expect(result.downloaded).toBe(1);
+		expect(result.tooBig).toHaveLength(0);
 	});
 });

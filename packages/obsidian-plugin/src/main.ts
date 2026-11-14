@@ -17,6 +17,7 @@ import {
 	type CloudProvider,
 	type LockedFolder,
 	type PluginSettings,
+	type SyncResult,
 } from "@cloud-drive-sync/core";
 import { FolderSecrets } from "./encryption/folder-secrets";
 import { ConfirmModal, PasswordFormModal } from "./encryption/encryption-modals";
@@ -32,6 +33,7 @@ import { GoogleDriveProvider } from "./providers/google-drive/google-drive-provi
 import { ObsidianHttpClient } from "./http/obsidian-http-client";
 import { ObsidianLocalFileSystem } from "./fs/obsidian-local-fs";
 import { ObsidianSyncUI } from "./sync/obsidian-sync-ui";
+import { SyncResultsModal } from "./sync/sync-results-modal";
 
 const DEBOUNCE_MS = 5000;
 const STATUS_REFRESH_MS = 10_000;
@@ -70,6 +72,9 @@ export default class CloudSyncPlugin extends Plugin {
 	atRest!: AtRestManager;
 	// Lock notices already shown this session (folder + reason)
 	private shownLocks = new Set<string>();
+	// Too-big paths already announced by an automatic sync, so the same
+	// oversized file doesn't raise a notice on every interval.
+	private announcedTooBig: Set<string> = new Set();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -234,6 +239,7 @@ export default class CloudSyncPlugin extends Plugin {
 			const result = await engine.syncPaths(paths);
 			this.noteLockedFolders(result.lockedFolders);
 			await this.atRest.onSynced(this.unlockCache, result.atRestFolders);
+			this.reportTooBig(result, false);
 			this.updateStatusBar("idle");
 			this.updateRibbon("idle");
 		} catch (e) {
@@ -334,6 +340,7 @@ export default class CloudSyncPlugin extends Plugin {
 					passwordFor: (folder) => this.secrets.get(folder),
 					unlockCache: this.unlockCache,
 				},
+				maxFileSize: this.maxFileSizeBytes(),
 			},
 		);
 		engine.onNotice = (msg) => new Notice(msg);
@@ -353,6 +360,29 @@ export default class CloudSyncPlugin extends Plugin {
 		// Forget notices for folders that unlocked, so a later re-lock shows again
 		const stillLocked = new Set(locked.map((l) => `${l.path}\u0000${l.reason}`));
 		for (const key of this.shownLocks) if (!stillLocked.has(key)) this.shownLocks.delete(key);
+	}
+
+	// Mobile WebViews run out of memory on large whole-file buffers, so the
+	// limit applies there only. undefined = no limit.
+	private maxFileSizeBytes(): number | undefined {
+		if (!Platform.isMobile) return undefined;
+		const mb = this.settings.mobileMaxFileSizeMB;
+		return mb > 0 ? Math.round(mb * 1024 * 1024) : undefined;
+	}
+
+	// Manual sync: list the files in the results dialog. Automatic sync: a
+	// notice, only when a file is newly too big, since nothing about these
+	// files changes from one interval to the next.
+	private reportTooBig(result: SyncResult, manual: boolean): void {
+		const paths = result.tooBig.map((i) => i.vaultPath);
+		if (manual) {
+			if (paths.length > 0) void new SyncResultsModal(this.app, result.tooBig).openAndWait();
+		} else if (paths.some((p) => !this.announcedTooBig.has(p))) {
+			new Notice(
+				`Cloud Sync: ${paths.length} file(s) too big for this device, not synced. Sync manually to see the list.`
+			);
+		}
+		for (const p of paths) this.announcedTooBig.add(p);
 	}
 
 	private getSyncEngine(): SyncEngine | null {
@@ -436,9 +466,11 @@ export default class CloudSyncPlugin extends Plugin {
 			if (result.conflicts > 0) parts.push(`${result.conflicts} conflicts resolved`);
 			if (result.errors > 0) parts.push(`${result.errors} errors`);
 			if (result.lockedFolders.length > 0) parts.push(`${result.lockedFolders.length} locked folder${result.lockedFolders.length === 1 ? "" : "s"} skipped`);
+			if (result.tooBig.length > 0) parts.push(`${result.tooBig.length} too big for this device`);
 			if (manual) {
 				new Notice(parts.length > 0 ? `Sync: ${parts.join(", ")}` : "Everything up to date");
 			}
+			this.reportTooBig(result, manual);
 		} catch (e) {
 			if (e instanceof GoogleAuthExpiredError) {
 				this.handleGoogleAuthExpired(e);
