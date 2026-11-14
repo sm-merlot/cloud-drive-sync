@@ -579,7 +579,14 @@ export default class CloudSyncPlugin extends Plugin {
 		const existing = this.app.workspace.getLeavesOfType(PRIVATE_NOTES_VIEW)[0];
 		const leaf = existing ?? this.app.workspace.getLeftLeaf(false) ?? this.app.workspace.getLeaf(true);
 		if (!existing) await leaf.setViewState({ type: PRIVATE_NOTES_VIEW, active: true });
-		this.app.workspace.revealLeaf(leaf);
+		await this.app.workspace.revealLeaf(leaf);
+		// A tab restored at startup is deferred: Obsidian doesn't build its view
+		// until something loads it, and the pane stays blank until then.
+		await leaf.loadIfDeferred();
+		if (!(leaf.view instanceof PrivateNotesView)) {
+			await leaf.setViewState({ type: PRIVATE_NOTES_VIEW, active: true });
+		}
+		if (leaf.view instanceof PrivateNotesView) await leaf.view.render();
 	}
 
 	// Ask for the password and unlock; true when unlocked
