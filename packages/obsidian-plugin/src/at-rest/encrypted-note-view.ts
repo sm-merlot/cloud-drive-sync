@@ -75,23 +75,23 @@ export class EncryptedNoteView extends FileView {
 			this.renderMessage(`Can't decrypt this note: ${e instanceof Error ? e.message : String(e)}`);
 			return;
 		}
-		this.removeFlusher = this.session.addFlusher(() => this.flush());
+		this.removeFlusher = this.session.addFlusher(() => this.flushSave());
 		this.mode = this.plugin.atRest.consumeEditRequest(file.path) ? "edit" : "read";
 		if (!this.modeAction) {
 			this.modeAction = this.addAction("pencil", "Edit / read", () => this.toggleMode());
 		}
 		// Header title shows the real name (only while unlocked, in memory)
 		(this.leaf as unknown as { updateHeader?: () => void }).updateHeader?.();
-		await this.render();
+		await this.renderNote();
 	}
 
 	async onUnloadFile(_file: TFile): Promise<void> {
-		await this.flush();
+		await this.flushSave();
 		this.teardown();
 	}
 
 	async onClose(): Promise<void> {
-		await this.flush();
+		await this.flushSave();
 		this.teardown();
 	}
 
@@ -110,12 +110,12 @@ export class EncryptedNoteView extends FileView {
 	private async toggleMode(): Promise<void> {
 		if (!this.session?.unlocked || !this.plainPath) return;
 		if (this.mode === "edit" && this.editor) this.text = this.editor.state.doc.toString();
-		await this.flush();
+		await this.flushSave();
 		this.mode = this.mode === "edit" ? "read" : "edit";
-		await this.render();
+		await this.renderNote();
 	}
 
-	private async render(): Promise<void> {
+	private async renderNote(): Promise<void> {
 		this.editor?.destroy();
 		this.editor = null;
 		this.contentEl.empty();
@@ -209,10 +209,10 @@ export class EncryptedNoteView extends FileView {
 
 	private scheduleSave(): void {
 		if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
-		this.saveTimer = window.setTimeout(() => void this.flush(), SAVE_DELAY_MS);
+		this.saveTimer = window.setTimeout(() => void this.flushSave(), SAVE_DELAY_MS);
 	}
 
-	private async flush(): Promise<void> {
+	private async flushSave(): Promise<void> {
 		if (this.saveTimer !== null) {
 			window.clearTimeout(this.saveTimer);
 			this.saveTimer = null;
