@@ -37,8 +37,12 @@
 .cds-private-notes .cds-private-row:hover { background: var(--background-modifier-hover); }
 .cds-private-notes .cds-private-note, .cds-private-notes .cds-private-empty { color: var(--text-muted); font-size: var(--font-ui-small); padding: 4px 8px; }
 .cds-private-notes .cds-private-warning { padding: 4px 8px; font-size: var(--font-ui-small); }
-.cds-encrypted-editor { height: 100%; }
-.cds-encrypted-editor .cm-editor { height: 100%; font-family: var(--font-text); font-size: var(--font-text-size); }
+/* The host is the scroll container and the editor is at least as tall as it,
+   so the whole pane is the writing area. On Android a fixed-height editor
+   shrank to a few lines. */
+.cds-encrypted-editor { height: 100%; overflow-y: auto; }
+.cds-encrypted-editor .cm-editor { height: auto !important; min-height: 100%; font-size: var(--font-text-size); }
+.cds-encrypted-editor .cm-editor .cm-scroller { overflow: visible; font-family: var(--font-text); line-height: var(--line-height-normal); }
 .cds-encrypted-editor .cm-content { max-width: var(--file-line-width); margin: 0 auto; padding: 16px 0; caret-color: var(--text-normal); }
 .cds-encrypted-editor .cm-editor.cm-focused { outline: none; }
 .cds-encrypted-locked { padding: 24px; text-align: center; color: var(--text-muted); }
