@@ -27,11 +27,11 @@ export class PrivateNotesView extends ItemView {
 	}
 
 	async onOpen(): Promise<void> {
-		this.unsubscribe = this.plugin.atRest.onChange(() => void this.render());
+		this.unsubscribe = this.plugin.atRest.onChange(() => void this.renderPanel());
 		this.registerEvent(this.app.vault.on("create", () => this.refreshSoon()));
 		this.registerEvent(this.app.vault.on("delete", () => this.refreshSoon()));
 		this.registerEvent(this.app.vault.on("rename", () => this.refreshSoon()));
-		await this.render();
+		await this.renderPanel();
 	}
 
 	async onClose(): Promise<void> {
@@ -42,10 +42,10 @@ export class PrivateNotesView extends ItemView {
 	private refreshTimer: number | null = null;
 	private refreshSoon(): void {
 		if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
-		this.refreshTimer = window.setTimeout(() => void this.render(), 300);
+		this.refreshTimer = window.setTimeout(() => void this.renderPanel(), 300);
 	}
 
-	async render(): Promise<void> {
+	async renderPanel(): Promise<void> {
 		const el = this.contentEl;
 		el.empty();
 		el.addClass("cds-private-notes");
@@ -130,22 +130,22 @@ export class PrivateNotesView extends ItemView {
 			row.createSpan({ text: node.isFile ? name.replace(/\.md$/i, "") : name });
 			row.addEventListener("click", () => {
 				session.touch();
-				if (node.isFile) void this.open(node.diskPath);
+				if (node.isFile) void this.openNote(node.diskPath);
 			});
-			row.addEventListener("contextmenu", (e) => this.menu(e, session, node));
+			row.addEventListener("contextmenu", (e) => this.showNodeMenu(e, session, node));
 			if (!node.isFile) this.renderChildren(el, session, nodes, node.plainPath, depth + 1);
 		}
 	}
 
-	private menu(e: MouseEvent, session: AtRestSession, node: AtRestNode): void {
+	private showNodeMenu(e: MouseEvent, session: AtRestSession, node: AtRestNode): void {
 		session.touch();
 		const m = new Menu();
 		if (!node.isFile) {
 			m.addItem((i) => i.setTitle("New note here").setIcon("file-plus").onClick(() => this.newNote(session, node.plainPath)));
 			m.addItem((i) => i.setTitle("New folder here").setIcon("folder-plus").onClick(() => this.newFolder(session, node.plainPath)));
 		}
-		m.addItem((i) => i.setTitle("Rename / move").setIcon("pencil").onClick(() => this.rename(session, node)));
-		m.addItem((i) => i.setTitle("Delete").setIcon("trash").onClick(() => this.remove(session, node)));
+		m.addItem((i) => i.setTitle("Rename / move").setIcon("pencil").onClick(() => this.renameNode(session, node)));
+		m.addItem((i) => i.setTitle("Delete").setIcon("trash").onClick(() => this.removeNode(session, node)));
 		m.showAtMouseEvent(e);
 	}
 
@@ -155,7 +155,9 @@ export class PrivateNotesView extends ItemView {
 		b.addEventListener("click", onClick);
 	}
 
-	private async open(diskPath: string): Promise<void> {
+	// Not "open": that name is Obsidian's internal View.open(containerEl), and
+	// shadowing it stops the view from ever loading (blank panel).
+	private async openNote(diskPath: string): Promise<void> {
 		const file = this.app.vault.getAbstractFileByPath(diskPath);
 		if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
 	}
@@ -164,21 +166,21 @@ export class PrivateNotesView extends ItemView {
 		const name = await new TextPromptModal(this.app, "New private note", "Untitled").openAndWait();
 		if (!name) return;
 		const plain = `${dir}/${/\.[a-z0-9]+$/i.test(name) ? name : `${name}.md`}`;
-		await this.run(async () => {
+		await this.runAction(async () => {
 			await session.createNote(plain);
 			const disk = await session.diskPathOf(plain, true);
 			this.plugin.atRest.requestEdit(disk);
-			await this.open(disk);
+			await this.openNote(disk);
 		});
 	}
 
 	private async newFolder(session: AtRestSession, dir: string): Promise<void> {
 		const name = await new TextPromptModal(this.app, "New folder", "").openAndWait();
 		if (!name) return;
-		await this.run(() => session.createFolder(`${dir}/${name}`));
+		await this.runAction(() => session.createFolder(`${dir}/${name}`));
 	}
 
-	private async rename(session: AtRestSession, node: AtRestNode): Promise<void> {
+	private async renameNode(session: AtRestSession, node: AtRestNode): Promise<void> {
 		const rel = node.plainPath.slice(session.folder.length + 1);
 		const next = await new TextPromptModal(
 			this.app,
@@ -186,23 +188,23 @@ export class PrivateNotesView extends ItemView {
 			rel,
 		).openAndWait();
 		if (!next || next === rel) return;
-		await this.run(() => session.rename(node.plainPath, `${session.folder}/${next.replace(/^\/+|\/+$/g, "")}`));
+		await this.runAction(() => session.rename(node.plainPath, `${session.folder}/${next.replace(/^\/+|\/+$/g, "")}`));
 	}
 
-	private async remove(session: AtRestSession, node: AtRestNode): Promise<void> {
+	private async removeNode(session: AtRestSession, node: AtRestNode): Promise<void> {
 		const name = node.plainPath.slice(session.folder.length + 1);
 		const ok = await new ConfirmModal(this.app, `Delete ${name}?`, [
 			node.isFile ? "The note goes to the system trash, still encrypted." : "The folder and everything in it go to the system trash, still encrypted.",
 			"It's deleted on other devices at their next sync.",
 		], "Delete").openAndWait();
 		if (!ok) return;
-		await this.run(() => session.delete(node.plainPath));
+		await this.runAction(() => session.delete(node.plainPath));
 	}
 
 	// Plaintext files that ended up inside the folder: encrypt each into a
 	// private note of the same name, then delete the plaintext.
 	private async encryptStrays(session: AtRestSession, paths: string[]): Promise<void> {
-		await this.run(async () => {
+		await this.runAction(async () => {
 			for (const p of paths) {
 				const file = this.app.vault.getAbstractFileByPath(p);
 				if (!(file instanceof TFile)) continue;
@@ -214,12 +216,12 @@ export class PrivateNotesView extends ItemView {
 		});
 	}
 
-	private async run(fn: () => Promise<void>): Promise<void> {
+	private async runAction(fn: () => Promise<void>): Promise<void> {
 		try {
 			await fn();
 		} catch (e) {
 			new Notice(e instanceof Error ? e.message : String(e));
 		}
-		await this.render();
+		await this.renderPanel();
 	}
 }

@@ -586,7 +586,7 @@ export default class CloudSyncPlugin extends Plugin {
 		if (!(leaf.view instanceof PrivateNotesView)) {
 			await leaf.setViewState({ type: PRIVATE_NOTES_VIEW, active: true });
 		}
-		if (leaf.view instanceof PrivateNotesView) await leaf.view.render();
+		if (leaf.view instanceof PrivateNotesView) await leaf.view.renderPanel();
 	}
 
 	// Ask for the password and unlock; true when unlocked
