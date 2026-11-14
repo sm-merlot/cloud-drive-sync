@@ -132,6 +132,12 @@ export class FolderEncryption {
 			const folder = f.path.slice(0, -(KEY_FILE_NAME.length + 1));
 			if (folder) keyFiles.set(folder, f);
 		}
+		// A key file gone from the server (folder decrypted, or converted
+		// elsewhere) must not live on in the cache: hosts read the cache to
+		// find at-rest folders, and a stale entry brings the folder back.
+		for (const folder of [...this.keyFileCache.keys()]) {
+			if (!keyFiles.has(folder)) this.keyFileCache.delete(folder);
+		}
 
 		// 2. Decide locked/unlocked per folder
 		const folders = new Set<string>([...keyFiles.keys(), ...this.settings.folders]);

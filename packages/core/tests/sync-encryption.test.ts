@@ -528,6 +528,22 @@ describe("at-rest folders: the engine syncs them as opaque files", () => {
 		expect(provider.downloadCalls).toBe(downloads);
 	});
 
+	it("drops a key file from the shared UnlockCache once it is gone from the server", async () => {
+		const cache = new UnlockCache();
+		const a = writer({ configured: false, unlockCache: cache });
+		const first = await a.engine.sync();
+		expect(first.atRestFolders).toEqual([FOLDER]);
+		expect(cache.keyFiles.has(FOLDER)).toBe(true);
+
+		// Decrypted: the key file is deleted from the server
+		provider.objects.delete(KEY_PATH);
+		const after = await a.engine.sync();
+		expect(after.atRestFolders).toEqual([]);
+		// Hosts find at-rest folders through this cache; a stale entry would
+		// bring the decrypted folder back
+		expect(cache.keyFiles.has(FOLDER)).toBe(false);
+	});
+
 	it("a key file with a mode from a newer plugin locks the folder", async () => {
 		const { keyFile } = await createKeyFile("pw1", { iterations: 1000 });
 		provider.setObject(KEY_PATH, JSON.stringify({ ...keyFile, mode: "future-mode" }), tick());

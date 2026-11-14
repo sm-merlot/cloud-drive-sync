@@ -95,6 +95,8 @@ export class AtRestManager {
 		}
 		for (const [folder, { keyFile }] of cache.keyFiles) {
 			if (folderMode(keyFile) !== "at-rest") continue;
+			// Only key files this sync actually saw on the server
+			if (seenAtRest && !seenAtRest.includes(folder)) continue;
 			const json = serializeKeyFile(keyFile);
 			if (this.plugin.settings.atRestFolders?.[folder] === json) continue;
 			this.plugin.settings.atRestFolders = { ...(this.plugin.settings.atRestFolders ?? {}), [folder]: json };
