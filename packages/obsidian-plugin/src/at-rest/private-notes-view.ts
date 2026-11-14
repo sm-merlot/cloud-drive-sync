@@ -57,7 +57,18 @@ export class PrivateNotesView extends ItemView {
 			});
 			return;
 		}
-		for (const session of sessions) await this.renderFolder(el, session);
+		// One folder failing to draw must not leave the panel blank
+		for (const session of sessions) {
+			try {
+				await this.renderFolder(el, session);
+			} catch (e) {
+				console.error(`Private notes: can't show ${session.folder}:`, e);
+				el.createEl("p", {
+					cls: "cds-private-note",
+					text: `Can't show ${session.folder}: ${e instanceof Error ? e.message : String(e)}`,
+				});
+			}
+		}
 	}
 
 	private async renderFolder(parent: HTMLElement, session: AtRestSession): Promise<void> {
