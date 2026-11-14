@@ -37,13 +37,17 @@
 .cds-private-notes .cds-private-row:hover { background: var(--background-modifier-hover); }
 .cds-private-notes .cds-private-note, .cds-private-notes .cds-private-empty { color: var(--text-muted); font-size: var(--font-ui-small); padding: 4px 8px; }
 .cds-private-notes .cds-private-warning { padding: 4px 8px; font-size: var(--font-ui-small); }
-/* The host is the scroll container and the editor is at least as tall as it,
-   so the whole pane is the writing area. On Android a fixed-height editor
-   shrank to a few lines. */
-.cds-encrypted-editor { height: 100%; overflow-y: auto; }
-.cds-encrypted-editor .cm-editor { height: auto !important; min-height: 100%; font-size: var(--font-text-size); }
-.cds-encrypted-editor .cm-editor .cm-scroller { overflow: visible; font-family: var(--font-text); line-height: var(--line-height-normal); }
+/* No scroll container of our own: the editor grows with its text and the
+   pane (.view-content) scrolls, as for Obsidian's own notes. Obsidian mobile
+   resizes and scrolls that pane around the on-screen keyboard; a fixed-height
+   editor inside it was squeezed to a few lines (Android) or pushed off screen
+   (iPad). The bottom padding lets the last lines scroll above the keyboard. */
+.workspace-leaf-content[data-type="cds-encrypted-note"] > .view-content { overflow-y: auto; }
+.cds-encrypted-editor { min-height: 100%; display: flex; flex-direction: column; }
+.cds-encrypted-editor .cm-editor { flex: 1 0 auto; height: auto !important; font-size: var(--font-text-size); }
+.cds-encrypted-editor .cm-editor .cm-scroller { overflow: visible !important; height: auto !important; font-family: var(--font-text); line-height: var(--line-height-normal); }
 .cds-encrypted-editor .cm-content { max-width: var(--file-line-width); margin: 0 auto; padding: 16px 0; caret-color: var(--text-normal); }
+.is-mobile .cds-encrypted-editor .cm-content { padding-bottom: 40vh; }
 .cds-encrypted-editor .cm-editor.cm-focused { outline: none; }
 .cds-encrypted-locked { padding: 24px; text-align: center; color: var(--text-muted); }
 .cds-encrypted-editor .cds-wikilink { color: var(--link-color); }
