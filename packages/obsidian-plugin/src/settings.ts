@@ -193,7 +193,6 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 				row.addButton((b) => b.setButtonText("Resume").setCta().onClick(() => void this.resumeAtRest(pending.kind, folder)));
 				continue;
 			}
-			row.addButton((b) => b.setButtonText("Open").onClick(() => void plugin.openPrivateNotes()));
 			row.addButton((b) => b.setButtonText("Change password").onClick(() => void this.changeAtRestPassword(folder)));
 			row.addButton((b) =>
 				b.setButtonText("Decrypt").setWarning().setTooltip("Turn back into a plain folder").onClick(async () => {
