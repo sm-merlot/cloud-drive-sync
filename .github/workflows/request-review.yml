@@ -1,0 +1,33 @@
+name: Request review
+
+# PRs Scott didn't open (Renovate, outside contributors) show in none of his
+# GitHub PR lists by default. Requesting his review puts them in his default
+# view. CODEOWNERS would do this, but not in private repos on the free plan.
+#
+# PRs opened with GITHUB_TOKEN start no workflows, so the workflows that open
+# them (version packages PRs and the like) request the review themselves.
+#
+# pull_request_target so fork PRs get a token that can request reviewers. It
+# never checks out the PR's code.
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  request:
+    if: github.event.pull_request.user.login != 'scme0'
+    runs-on: homelab-1gb
+    # The ARC runners only take container jobs.
+    container: node:24-bookworm-slim
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.pulls.requestReviewers({
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+              reviewers: ['scme0'],
+            });
